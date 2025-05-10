@@ -1,16 +1,31 @@
 #!/bin/bash
 
-# Check if KEY_PATH is set
 if [ -z "$KEY_PATH" ]; then
-    echo "KEY_PATH is not set"
-    exit 5
+  echo "KEY_PATH env var is expected"
+  exit 5
 fi
 
-# Variables – change if needed
-BASTION_USER=ubuntu
-BASTION_IP=18.188.174.40    #bastion's public IP
-TARGET_USER=ubuntu
-TARGET_IP=10.0.0.135         #Polybot's private IP
+if [ -z "$1" ]; then
+  echo "Please provide bastion IP address"
+  exit 5
+fi
 
+if [ -z "$2" ]; then
+  echo "Please provide private IP of the target instance"
+  exit 5
+fi
 
-ssh -i "$KEY_PATH" -o ProxyCommand="ssh -i $KEY_PATH -W %h:%p $BASTION_USER@$BASTION_IP" $TARGET_USER@$TARGET_IP
+if [ -z "$3" ]; then
+  echo "Please provide a command to run on the target"
+  exit 5
+fi
+
+BASTION_IP="$1"
+TARGET_PRIVATE_IP="$2"
+shift 2
+COMMAND="$@"
+
+ssh -i "$KEY_PATH" \
+    -o StrictHostKeyChecking=no \
+    -o ProxyCommand="ssh -i $KEY_PATH -o StrictHostKeyChecking=no -W %h:%p ubuntu@$BASTION_IP" \
+    ubuntu@$TARGET_PRIVATE_IP "$COMMAND"
