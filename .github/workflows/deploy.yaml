@@ -1,63 +1,47 @@
-name: Nginx Prod Deploy
+name: Deploy Nginx Container to prod
 
 on:
   push:
     paths:
       - "nginx-config/polybot-prod.conf"
-      - "scripts/deploy_nginx.sh"
+      - "scripts/deploy_nginx_container.sh"
     branches:
       - main
   workflow_dispatch:
 
-env:
-  REPO_URL: ${{ github.server_url }}/${{ github.repository }}.git
-  REPO_NAME: ${{ github.event.repository.name }}
-
 jobs:
-  Deploy:
+  deploy:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+    - name: Checkout code
+      uses: actions/checkout@v4
 
-      - name: Configure SSH
-        env:
-          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-          EC2_HOST: ${{ secrets.EC2_HOST }}
-          EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
-        run: |
-          mkdir -p ~/.ssh
-          echo "$SSH_PRIVATE_KEY" > ~/.ssh/private_key
-          chmod 600 ~/.ssh/private_key
-          cat > ~/.ssh/config << EOF
-          Host ec2
-              HostName $EC2_HOST
-              User $EC2_USERNAME
-              IdentityFile ~/.ssh/private_key
-              StrictHostKeyChecking no
-          EOF
+    - name: Set up SSH
+      run: |
+        echo "${{ secrets.SSH_PRIVATE_KEY }}" > key.pem
+        chmod 600 key.pem
 
-      - name: Ensure target directories exist on EC2
-        run: |
-          ssh ec2 << 'EOF'
-            mkdir -p /home/ubuntu/conf.d
-            mkdir -p /home/ubuntu/certs
-          EOF
+    - name: Create target dirs
+      run: |
+        ssh -i key.pem -o StrictHostKeyChecking=no ubuntu@${{ secrets.EC2_HOST }} << 'EOF'
+          mkdir -p /home/ubuntu/conf.d
+          mkdir -p /home/ubuntu/certs
+        EOF
 
-      - name: Copy Nginx config and deploy script to EC2
-        run: |
-          scp -i ~/.ssh/private_key -o StrictHostKeyChecking=no \
-            nginx-config/polybot-prod.conf \
-            ec2:/home/ubuntu/conf.d/
+    - name: Copy config and script
+      run: |
+        scp -i key.pem -o StrictHostKeyChecking=no \
+          nginx-config/polybot-prod.conf \
+          ubuntu@${{ secrets.EC2_HOST }}:/home/ubuntu/conf.d/default.conf
 
-          scp -i ~/.ssh/private_key -o StrictHostKeyChecking=no \
-            scripts/deploy_nginx.sh \
-            ec2:/home/ubuntu/
+        scp -i key.pem -o StrictHostKeyChecking=no \
+          scripts/deploy_nginx_container.sh \
+          ubuntu@${{ secrets.EC2_HOST }}:/home/ubuntu/
 
-      - name: Run deploy script on EC2
-        run: |
-          ssh ec2 << 'EOF'
-            chmod +x /home/ubuntu/deploy_nginx.sh
-            /home/ubuntu/deploy_nginx.sh
-          EOF
+    - name: Run deploy script
+      run: |
+        ssh -i key.pem -o StrictHostKeyChecking=no ubuntu@${{ secrets.EC2_HOST }} << 'EOF'
+          chmod +x /home/ubuntu/deploy_nginx_container.sh
+          /home/ubuntu/deploy_nginx_container.sh
+        EOF
