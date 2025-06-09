@@ -40,7 +40,7 @@ jobs:
 
           scp -i key.pem -o StrictHostKeyChecking=no \
             scripts/deploy_nginx_container.sh \
-            ubuntu@${{ secrets.EC2_DEV_HOST }}:/home/ubuntu/
+            ubuntu@${{ secrets.EC2_DEV_HOST }}:/home/ubuntu/deploy_nginx_container.sh
 
       - name: Run deploy script
         run: |
