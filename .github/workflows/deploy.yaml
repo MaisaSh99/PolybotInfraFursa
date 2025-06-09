@@ -2,9 +2,11 @@ name: Nginx Prod Deploy
 
 on:
   push:
+    paths:
+      - "nginx-config/polybot-prod.conf"
+      - "scripts/deploy_nginx.sh"
     branches:
       - main
-
   workflow_dispatch:
 
 env:
@@ -35,12 +37,27 @@ jobs:
               IdentityFile ~/.ssh/private_key
               StrictHostKeyChecking no
           EOF
-      - name: Copy and checkout PR branch to EC2
-#test
-        run: |
-          # Clone repository if it doesn't exist, otherwise pull latest changes
-           ssh ec2 "if [ -d ~/${REPO_NAME} ]; then cd ~/${REPO_NAME} && git pull; else git clone ${REPO_URL} ~/${REPO_NAME}; fi"
 
-      - name: Execute script on EC2
+      - name: Ensure target directories exist on EC2
         run: |
-          ssh ec2 "cd $REPO_NAME && bash nginx-config/deploy.sh ~/${REPO_NAME}"
+          ssh ec2 << 'EOF'
+            mkdir -p /home/ubuntu/conf.d
+            mkdir -p /home/ubuntu/certs
+          EOF
+
+      - name: Copy Nginx config and deploy script to EC2
+        run: |
+          scp -i ~/.ssh/private_key -o StrictHostKeyChecking=no \
+            nginx-config/polybot-prod.conf \
+            ec2:/home/ubuntu/conf.d/
+
+          scp -i ~/.ssh/private_key -o StrictHostKeyChecking=no \
+            scripts/deploy_nginx.sh \
+            ec2:/home/ubuntu/
+
+      - name: Run deploy script on EC2
+        run: |
+          ssh ec2 << 'EOF'
+            chmod +x /home/ubuntu/deploy_nginx.sh
+            /home/ubuntu/deploy_nginx.sh
+          EOF
