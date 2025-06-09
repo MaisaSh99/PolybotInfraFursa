@@ -5,7 +5,7 @@ on:
     branches:
       - main
     paths:
-      - "nginx-config/polybot-prod.conf"
+      - "nginx-config/default.conf"
       - "scripts/deploy_nginx_container.sh"
   pull_request:
     branches:
@@ -35,7 +35,7 @@ jobs:
       - name: Copy config and script
         run: |
           scp -i key.pem -o StrictHostKeyChecking=no \
-            nginx-config/polybot-prod.conf \
+            nginx-config/default.conf \
             ubuntu@${{ secrets.EC2_HOST }}:/home/ubuntu/conf.d/default.conf
 
           scp -i key.pem -o StrictHostKeyChecking=no \
