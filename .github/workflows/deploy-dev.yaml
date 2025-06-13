@@ -36,7 +36,8 @@ jobs:
         run: |
           scp -i key.pem -o StrictHostKeyChecking=no \
             nginx-config/default.conf \
-            ubuntu@${{ secrets.EC2_DEV_HOST }}:/home/ubuntu/conf.d/default.conf
+            ubuntu@${{ secrets.EC2_HOST }}:/home/ubuntu/nginx-config/default.conf
+
 
           scp -i key.pem -o StrictHostKeyChecking=no \
             scripts/deploy_nginx_container.sh \
