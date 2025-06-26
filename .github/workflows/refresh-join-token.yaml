@@ -1,0 +1,22 @@
+name: Refresh K8s Join Token
+
+on:
+  schedule:
+    - cron: '0 */12 * * *' # every 12 hours
+  workflow_dispatch:       # allow manual trigger too
+
+jobs:
+  refresh-token:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Refresh join token via SSH
+      uses: appleboy/ssh-action@v0.1.10
+      with:
+        host: ${{ secrets.CONTROL_PLANE_IP }}
+        username: ubuntu
+        key: ${{ secrets.SSH_PRIVATE_KEY }}
+        script: |
+          curl -O https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/refresh-k8s-join-token.sh
+          chmod +x refresh-k8s-join-token.sh
+          ./refresh-k8s-join-token.sh
