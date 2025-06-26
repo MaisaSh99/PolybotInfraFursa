@@ -82,3 +82,6 @@ __pycache__/
 
 # Terraform plugin cache
 .terraform.d/
+
+.github/workflows/deploy.yaml
+.github/workflows/deploy-dev.yaml
