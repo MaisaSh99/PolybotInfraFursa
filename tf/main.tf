@@ -9,7 +9,7 @@ terraform {
   }
   backend "s3" {
     bucket = "maisa-tf-state-ohio"
-    key    = "k8s/${terraform.workspace}/terraform.tfstate"
+    key    = "k8s/terraform.tfstate"
     region = "us-east-2"
     encrypt = true
   }
