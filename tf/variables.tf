@@ -80,3 +80,15 @@ variable "vpc_cidr" {
   type        = string
   default     = "10.0.0.0/16"
 }
+
+variable "use_existing_vpc" {
+  description = "Whether to use an existing VPC"
+  type        = bool
+  default     = false
+}
+
+variable "existing_vpc_name" {
+  description = "Name of the existing VPC to use (if any)"
+  type        = string
+  default     = ""
+}
