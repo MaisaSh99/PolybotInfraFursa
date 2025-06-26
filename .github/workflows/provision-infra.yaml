@@ -1,0 +1,57 @@
+name: Provision K8s Infrastructure
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  provision:
+    name: Terraform Apply Infrastructure
+    runs-on: ubuntu-latest
+
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.5.7
+          terraform_wrapper: false  # Needed for output parsing
+
+      - name: Terraform Init
+        working-directory: tf
+        run: terraform init
+
+      - name: Select/Create Terraform Workspace
+        working-directory: tf
+        run: |
+          terraform workspace select ${{ secrets.AWS_REGION }} || terraform workspace new ${{ secrets.AWS_REGION }}
+
+      - name: Terraform Plan
+        working-directory: tf
+        run: terraform plan -var-file="region.${{ secrets.AWS_REGION }}.tfvars"
+
+      - name: Terraform Apply
+        working-directory: tf
+        run: terraform apply -auto-approve -var-file="region.${{ secrets.AWS_REGION }}.tfvars"
+
+      - name: Get Terraform Outputs
+        id: terraform-output
+        working-directory: tf
+        run: |
+          echo "control_plane_ip=$(terraform output -raw control_plane_public_ip)" >> $GITHUB_OUTPUT
+
+      - name: Update GitHub Secrets with Control Plane IP
+        uses: gliech/create-github-secret-action@v1
+        with:
+          name: CONTROL_PLANE_IP
+          value: ${{ steps.terraform-output.outputs.control_plane_ip }}
+          pa_token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
