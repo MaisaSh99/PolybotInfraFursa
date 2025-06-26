@@ -18,8 +18,7 @@ max_worker_nodes     = 3
 desired_worker_nodes = 2
 
 # ---- VPC --------------------------------------------------------------------
-use_existing_vpc  = true
-existing_vpc_name = "m-polybot-vpc"
+vpc_cidr = "10.0.0.0/16"
 
 # ---- AMI --------------------------------------------------------------------
-ami_id = "ami-0d1b5a8c13042c939"   # ✅ new line
+ami_id = "ami-0d1b5a8c13042c939"

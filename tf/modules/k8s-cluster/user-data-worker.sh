@@ -1,6 +1,4 @@
 #!/bin/bash
-# tf/modules/k8s-cluster/user_data_worker.sh
-
 # These instructions are for Kubernetes v1.32
 KUBERNETES_VERSION=v1.32
 sudo apt-get update
