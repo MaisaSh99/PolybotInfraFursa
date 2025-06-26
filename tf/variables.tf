@@ -1,3 +1,5 @@
+# tf/variables.tf
+
 #########################
 #  Global / Location    #
 #########################
@@ -73,14 +75,8 @@ variable "desired_worker_nodes" {
 #########################
 #  VPC                  #
 #########################
-variable "use_existing_vpc" {
-  description = "Whether to use an existing VPC"
-  type        = bool
-  default     = false
-}
-
-variable "existing_vpc_name" {
-  description = "Name of the existing VPC to use (if any)"
+variable "vpc_cidr" {
+  description = "CIDR block for the VPC"
   type        = string
-  default     = ""
+  default     = "10.0.0.0/16"
 }
