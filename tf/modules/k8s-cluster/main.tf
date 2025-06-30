@@ -1,11 +1,5 @@
 # tf/modules/k8s-cluster/main.tf
 
-# Data source to fetch existing VPC by ID directly
-data "aws_vpc" "existing" {
-  count = var.use_existing_vpc ? 1 : 0
-  id    = var.existing_vpc_id
-}
-
 # Data source to fetch existing subnets by IDs (only if subnet IDs are provided)
 data "aws_subnet" "existing" {
   count = var.use_existing_vpc && length(var.public_subnet_ids) > 0 ? length(var.public_subnet_ids) : 0
