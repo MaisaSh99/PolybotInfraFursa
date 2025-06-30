@@ -42,6 +42,12 @@ resource "aws_iam_role_policy_attachment" "control_plane_s3_access" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonS3FullAccess"
 }
 
+# Add Secrets Manager access for the control plane
+resource "aws_iam_role_policy_attachment" "control_plane_secrets_access" {
+  role       = aws_iam_role.control_plane_role.name
+  policy_arn = "arn:aws:iam::aws:policy/SecretsManagerReadWrite"
+}
+
 resource "aws_iam_instance_profile" "control_plane_profile" {
   name = "${var.cluster_name}-control-plane-profile"
   role = aws_iam_role.control_plane_role.name
@@ -64,6 +70,12 @@ resource "aws_iam_role" "worker_role" {
 resource "aws_iam_role_policy_attachment" "worker_ecr_readonly" {
   role       = aws_iam_role.worker_role.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+}
+
+# Add SSM access for workers to read join command
+resource "aws_iam_role_policy_attachment" "worker_ssm_access" {
+  role       = aws_iam_role.worker_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMReadOnlyAccess"
 }
 
 resource "aws_iam_instance_profile" "worker_profile" {
@@ -132,6 +144,42 @@ resource "aws_security_group" "control_plane_sg" {
     cidr_blocks = ["0.0.0.0/0"] # tighten later
   }
 
+  # etcd server client API
+  ingress {
+    description = "etcd server client API"
+    from_port   = 2379
+    to_port     = 2380
+    protocol    = "tcp"
+    cidr_blocks = [var.vpc_cidr]
+  }
+
+  # Kubelet API
+  ingress {
+    description = "Kubelet API"
+    from_port   = 10250
+    to_port     = 10250
+    protocol    = "tcp"
+    cidr_blocks = [var.vpc_cidr]
+  }
+
+  # kube-scheduler
+  ingress {
+    description = "kube-scheduler"
+    from_port   = 10259
+    to_port     = 10259
+    protocol    = "tcp"
+    cidr_blocks = [var.vpc_cidr]
+  }
+
+  # kube-controller-manager
+  ingress {
+    description = "kube-controller-manager"
+    from_port   = 10257
+    to_port     = 10257
+    protocol    = "tcp"
+    cidr_blocks = [var.vpc_cidr]
+  }
+
   egress {
     from_port   = 0
     to_port     = 0
@@ -155,6 +203,24 @@ resource "aws_security_group" "worker_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  # Kubelet API
+  ingress {
+    description = "Kubelet API"
+    from_port   = 10250
+    to_port     = 10250
+    protocol    = "tcp"
+    cidr_blocks = [var.vpc_cidr]
+  }
+
+  # NodePort Services
+  ingress {
+    description = "NodePort Services"
+    from_port   = 30000
+    to_port     = 32767
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
   ingress {
     description = "Pods / intra‑cluster"
     from_port   = 0
@@ -174,7 +240,19 @@ resource "aws_security_group" "worker_sg" {
 }
 
 #######################################
-# 5. CONTROL‑PLANE ASG (new)                                             #
+# 5. Elastic IP for Control Plane                                         #
+#######################################
+
+resource "aws_eip" "control_plane_eip" {
+  domain = "vpc"
+
+  tags = {
+    Name = "${var.cluster_name}-control-plane-eip"
+  }
+}
+
+#######################################
+# 6. CONTROL‑PLANE ASG                                                   #
 #######################################
 
 resource "aws_launch_template" "control_plane_template" {
@@ -192,11 +270,17 @@ resource "aws_launch_template" "control_plane_template" {
     security_groups             = [aws_security_group.control_plane_sg.id]
   }
 
-  user_data = base64encode(file("${path.module}/user_data_control_plane.sh"))
+  user_data = base64encode(templatefile("${path.module}/user_data_control_plane.sh", {
+    eip_allocation_id = aws_eip.control_plane_eip.id
+    region           = var.region
+  }))
 
   tag_specifications {
     resource_type = "instance"
-    tags = { Name = "${var.cluster_name}-control-plane" }
+    tags = {
+      Name = "${var.cluster_name}-control-plane"
+      Type = "control-plane"
+    }
   }
 }
 
@@ -219,11 +303,17 @@ resource "aws_autoscaling_group" "control_plane_asg" {
     propagate_at_launch = true
   }
 
+  tag {
+    key                 = "Type"
+    value               = "control-plane"
+    propagate_at_launch = true
+  }
+
   lifecycle { create_before_destroy = true }
 }
 
 #######################################
-# 6. WORKER  Launch Template + ASG                                        #
+# 7. WORKER Launch Template + ASG                                         #
 #######################################
 
 resource "aws_launch_template" "worker_template" {
@@ -239,11 +329,16 @@ resource "aws_launch_template" "worker_template" {
     security_groups             = [aws_security_group.worker_sg.id]
   }
 
-  user_data = base64encode(file("${path.module}/user_data_worker.sh"))
+  user_data = base64encode(templatefile("${path.module}/user_data_worker.sh", {
+    region = var.region
+  }))
 
   tag_specifications {
     resource_type = "instance"
-    tags = { Name = "${var.cluster_name}-worker" }
+    tags = {
+      Name = "${var.cluster_name}-worker"
+      Type = "worker"
+    }
   }
 }
 
@@ -263,6 +358,12 @@ resource "aws_autoscaling_group" "worker_asg" {
   tag {
     key                 = "Name"
     value               = "${var.cluster_name}-worker"
+    propagate_at_launch = true
+  }
+
+  tag {
+    key                 = "Type"
+    value               = "worker"
     propagate_at_launch = true
   }
 
