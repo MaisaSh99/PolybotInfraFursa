@@ -36,12 +36,12 @@ existing_vpc_id    = "vpc-0cce4b185bc2b19df"
 vpc_cidr           = "10.0.0.0/16"
 
 # -------------------------------------------------------------------
-#  Create new subnets in m-polybot-vpc (remove existing subnet IDs)
+#  Re-use the two public subnets that exist in m-polybot-vpc
 # -------------------------------------------------------------------
-# public_subnet_ids = [
-#   "subnet-07f1184e1bb1ea655", # These are in the wrong VPC
-#   "subnet-03561e996573c117b"  # These are in the wrong VPC
-# ]
+public_subnet_ids = [
+  "subnet-0b0dd5d582844c3ff", # 10.0.0.0/24 in us-east-2a (m-polybot-subnet-a)
+  "subnet-0ad61d1d84a4a863f"  # 10.0.1.0/24 in us-east-2b (m-polybot-subnet-b)
+]
 
 # -------------------------------------------------------------------
 #  AMI
