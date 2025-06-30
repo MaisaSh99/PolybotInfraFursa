@@ -93,6 +93,18 @@ variable "existing_vpc_name" {
   default     = ""
 }
 
+variable "existing_vpc_id" {
+  description = "ID of the existing VPC to use (if any)"
+  type        = string
+  default     = ""
+}
+
+variable "existing_vpc_id" {
+  description = "ID of the existing VPC to use (if any)"
+  type        = string
+  default     = ""
+}
+
 variable "public_subnet_ids" {
   description = "List of existing public subnet IDs to use (when use_existing_vpc is true)"
   type        = list(string)
