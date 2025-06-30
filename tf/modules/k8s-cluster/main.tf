@@ -248,6 +248,7 @@ resource "aws_launch_template" "worker_template" {
   network_interfaces {
     associate_public_ip_address = true
     security_groups             = [aws_security_group.worker_sg.id]
+    delete_on_termination       = true
   }
 
   user_data = base64encode(file("${path.module}/user_data_worker.sh"))
