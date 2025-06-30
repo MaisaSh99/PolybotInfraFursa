@@ -1,6 +1,6 @@
 # tf/modules/k8s-cluster/main.tf
 
-# Data source to fetch existing VPC by ID (more reliable than name)
+# Data source to fetch existing VPC by ID directly
 data "aws_vpc" "existing" {
   count = var.use_existing_vpc ? 1 : 0
   id    = var.existing_vpc_id
@@ -34,11 +34,11 @@ resource "aws_internet_gateway" "igw" {
 
 # Local values to determine which VPC and subnets to use
 locals {
-  vpc_id     = var.use_existing_vpc ? data.aws_vpc.existing[0].id : aws_vpc.k8s_vpc[0].id
+  vpc_id     = var.use_existing_vpc ? var.existing_vpc_id : aws_vpc.k8s_vpc[0].id
   # Use existing subnet IDs if provided, otherwise use created subnets
   subnet_ids = length(var.public_subnet_ids) > 0 ? var.public_subnet_ids : aws_subnet.public_subnets[*].id
-  # Use the VPC CIDR from the data source when using existing VPC
-  vpc_cidr   = var.use_existing_vpc ? data.aws_vpc.existing[0].cidr_block : var.vpc_cidr
+  # Use the hardcoded VPC CIDR when using existing VPC to avoid data source issues
+  vpc_cidr   = var.use_existing_vpc ? var.vpc_cidr : var.vpc_cidr
 }
 
 # IAM Role for control plane EC2 instance
