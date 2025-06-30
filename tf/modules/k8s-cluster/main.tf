@@ -72,7 +72,11 @@ resource "aws_iam_instance_profile" "worker_profile" {
 resource "aws_subnet" "public_subnets" {
   count             = 2
   vpc_id            = aws_vpc.k8s_vpc.id
-  cidr_block        = cidrsubnet(var.vpc_cidr, 8, count.index)
+
+  # Use CIDRs that definitely don't conflict with existing subnets
+  # Current conflict is with 10.0.1.0/24, so use 10.0.10.0/24 and 10.0.11.0/24
+  cidr_block = count.index == 0 ? "10.0.10.0/24" : "10.0.11.0/24"
+
   availability_zone = var.availability_zones[count.index]
 
   tags = {
