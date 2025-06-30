@@ -20,6 +20,16 @@ jobs:
         username: ubuntu
         key: ${{ secrets.SSH_PRIVATE_KEY }}
         script: |
+          # Wait for user data to finish installing packages
+          echo "Waiting for user data to complete..."
+          sleep 300  # Wait 5 minutes for packages to install
+          
+          # Wait for kubeadm to be available
+          while ! command -v kubeadm &> /dev/null; do
+            echo "Waiting for kubeadm to be installed..."
+            sleep 30
+          done
+          
           # Step 1: Init Kubernetes Cluster
           curl -O https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/init-k8s-cluster.sh
           chmod +x init-k8s-cluster.sh
