@@ -22,7 +22,7 @@ resource "aws_internet_gateway" "igw" {
 # 2. IAM                                                                   #
 #######################################
 
-# ---- Control‑plane role -------------------------------------------------
+# ---- Control-plane role -------------------------------------------------
 resource "aws_iam_role" "control_plane_role" {
   name = "${var.cluster_name}-control-plane-role"
 
@@ -36,7 +36,7 @@ resource "aws_iam_role" "control_plane_role" {
   })
 }
 
-# Attach base policies (adjust these to least‑privilege in future)
+# Attach base policies (adjust these to least-privilege in future)
 resource "aws_iam_role_policy_attachment" "control_plane_s3_access" {
   role       = aws_iam_role.control_plane_role.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonS3FullAccess"
@@ -125,7 +125,7 @@ resource "aws_route_table_association" "public_assoc" {
 
 resource "aws_security_group" "control_plane_sg" {
   name        = "${var.cluster_name}-control-plane-sg"
-  description = "K8s control‑plane access"
+  description = "K8s control-plane access"
   vpc_id      = aws_vpc.k8s_vpc.id
 
   ingress {
@@ -222,7 +222,7 @@ resource "aws_security_group" "worker_sg" {
   }
 
   ingress {
-    description = "Pods / intra‑cluster"
+    description = "Pods / intra-cluster"
     from_port   = 0
     to_port     = 65535
     protocol    = "tcp"
@@ -252,7 +252,7 @@ resource "aws_eip" "control_plane_eip" {
 }
 
 #######################################
-# 6. CONTROL‑PLANE ASG                                                   #
+# 6. CONTROL-PLANE ASG                                                   #
 #######################################
 
 resource "aws_launch_template" "control_plane_template" {
