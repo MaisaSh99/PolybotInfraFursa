@@ -38,4 +38,9 @@ module "k8s_cluster" {
   min_worker_nodes     = var.min_worker_nodes
   max_worker_nodes     = var.max_worker_nodes
   desired_worker_nodes = var.desired_worker_nodes
+
+  # Existing VPC support
+  use_existing_vpc    = var.use_existing_vpc
+  existing_vpc_name   = var.existing_vpc_name
+  public_subnet_ids   = var.public_subnet_ids
 }
