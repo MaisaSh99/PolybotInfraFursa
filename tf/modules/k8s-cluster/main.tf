@@ -6,9 +6,9 @@ data "aws_vpc" "existing" {
   id    = var.existing_vpc_id
 }
 
-# Data source to fetch existing subnets by IDs
+# Data source to fetch existing subnets by IDs (only if subnet IDs are provided)
 data "aws_subnet" "existing" {
-  count = var.use_existing_vpc ? length(var.public_subnet_ids) : 0
+  count = var.use_existing_vpc && length(var.public_subnet_ids) > 0 ? length(var.public_subnet_ids) : 0
   id    = var.public_subnet_ids[count.index]
 }
 
