@@ -1,13 +1,9 @@
 # tf/modules/k8s-cluster/main.tf
 
-# Data source to fetch existing VPC by name
+# Data source to fetch existing VPC by ID (more reliable than name)
 data "aws_vpc" "existing" {
   count = var.use_existing_vpc ? 1 : 0
-
-  filter {
-    name   = "tag:Name"
-    values = [var.existing_vpc_name]
-  }
+  id    = var.existing_vpc_id
 }
 
 # Data source to fetch existing subnets by IDs
@@ -39,7 +35,8 @@ resource "aws_internet_gateway" "igw" {
 # Local values to determine which VPC and subnets to use
 locals {
   vpc_id     = var.use_existing_vpc ? data.aws_vpc.existing[0].id : aws_vpc.k8s_vpc[0].id
-  subnet_ids = var.use_existing_vpc ? var.public_subnet_ids : aws_subnet.public_subnets[*].id
+  # Use existing subnet IDs if provided, otherwise use created subnets
+  subnet_ids = length(var.public_subnet_ids) > 0 ? var.public_subnet_ids : aws_subnet.public_subnets[*].id
   # Use the VPC CIDR from the data source when using existing VPC
   vpc_cidr   = var.use_existing_vpc ? data.aws_vpc.existing[0].cidr_block : var.vpc_cidr
 }
@@ -97,10 +94,10 @@ resource "aws_iam_instance_profile" "worker_profile" {
   role = aws_iam_role.control_plane_role.name
 }
 
-# Create new subnets only if not using existing ones
+# Create new subnets if no existing subnet IDs are provided
 resource "aws_subnet" "public_subnets" {
-  count             = var.use_existing_vpc ? 0 : 2
-  vpc_id            = aws_vpc.k8s_vpc[0].id
+  count             = length(var.public_subnet_ids) > 0 ? 0 : 2
+  vpc_id            = local.vpc_id
   cidr_block        = var.public_subnet_cidrs[count.index]
   availability_zone = var.availability_zones[count.index]
 
@@ -129,7 +126,7 @@ resource "aws_route" "igw_route" {
 
 # Create route table associations only if creating new subnets
 resource "aws_route_table_association" "public_assoc" {
-  count          = var.use_existing_vpc ? 0 : 2
+  count          = length(var.public_subnet_ids) > 0 ? 0 : 2
   subnet_id      = aws_subnet.public_subnets[count.index].id
   route_table_id = aws_route_table.public_rt[0].id
 }
@@ -248,6 +245,7 @@ resource "aws_launch_template" "worker_template" {
   network_interfaces {
     associate_public_ip_address = true
     security_groups             = [aws_security_group.worker_sg.id]
+    delete_on_termination       = true
   }
 
   user_data = base64encode(file("${path.module}/user_data_worker.sh"))
