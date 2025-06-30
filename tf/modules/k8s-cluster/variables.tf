@@ -52,7 +52,7 @@ variable "ami_id" {
 # Control Plane & Worker Instances    #
 #######################################
 variable "instance_type_control_plane" {
-  description = "EC2 instance type for the control plane node"
+  description = "EC2 instance type for the control-plane node"
   type        = string
   default     = "t2.medium"
 }
@@ -61,6 +61,27 @@ variable "instance_type_worker" {
   description = "EC2 instance type for worker nodes"
   type        = string
   default     = "t2.small"
+}
+
+#######################################
+# Auto Scaling for CONTROL PLANE      #
+#######################################
+variable "min_control_plane_nodes" {
+  description = "Minimum number of control-plane nodes in the ASG"
+  type        = number
+  default     = 1
+}
+
+variable "max_control_plane_nodes" {
+  description = "Maximum number of control-plane nodes in the ASG"
+  type        = number
+  default     = 1
+}
+
+variable "desired_control_plane_nodes" {
+  description = "Desired number of control-plane nodes in the ASG"
+  type        = number
+  default     = 1
 }
 
 #######################################
