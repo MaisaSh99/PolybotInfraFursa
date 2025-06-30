@@ -1,5 +1,4 @@
 # tf/variables.tf
-
 #########################
 #  Global / Location    #
 #########################
@@ -52,6 +51,27 @@ variable "instance_type_worker" {
 }
 
 #########################
+#  Control-plane scaling#
+#########################
+variable "min_control_plane_nodes" {
+  description = "Minimum number of control-plane nodes"
+  type        = number
+  default     = 1
+}
+
+variable "max_control_plane_nodes" {
+  description = "Maximum number of control-plane nodes"
+  type        = number
+  default     = 1
+}
+
+variable "desired_control_plane_nodes" {
+  description = "Desired number of control-plane nodes"
+  type        = number
+  default     = 1
+}
+
+#########################
 #  Worker scaling       #
 #########################
 variable "min_worker_nodes" {
@@ -73,12 +93,24 @@ variable "desired_worker_nodes" {
 }
 
 #########################
-#  VPC                  #
+#  VPC & Subnets        #
 #########################
 variable "vpc_cidr" {
   description = "CIDR block for the VPC"
   type        = string
   default     = "10.0.0.0/16"
+}
+
+variable "public_subnet_cidrs" {
+  description = "CIDR blocks for public subnets"
+  type        = list(string)
+  default     = ["10.0.1.0/24", "10.0.2.0/24"]
+}
+
+variable "private_subnet_cidrs" {
+  description = "CIDR blocks for private subnets"
+  type        = list(string)
+  default     = ["10.0.3.0/24", "10.0.4.0/24"]
 }
 
 variable "use_existing_vpc" {

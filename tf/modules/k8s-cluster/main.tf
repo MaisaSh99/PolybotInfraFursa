@@ -1,4 +1,9 @@
-# tf/modules/k8s-cluster/main.tf
+‑plane now in ASG)
+# -----------------------------------------------------------------------------
+
+#######################################
+# 1. Networking                                                            #
+#######################################
 
 resource "aws_vpc" "k8s_vpc" {
   cidr_block = var.vpc_cidr
@@ -16,67 +21,72 @@ resource "aws_internet_gateway" "igw" {
   }
 }
 
-# IAM Role for control plane EC2 instance
+#######################################
+# 2. IAM                                                                   #
+#######################################
+
+# ---- Control‑plane role -------------------------------------------------
 resource "aws_iam_role" "control_plane_role" {
   name = "${var.cluster_name}-control-plane-role"
 
   assume_role_policy = jsonencode({
-    Version = "2012-10-17",
-    Statement = [{
-      Action = "sts:AssumeRole",
-      Effect = "Allow",
-      Principal = {
-        Service = "ec2.amazonaws.com"
-      }
+    Version : "2012-10-17",
+    Statement : [{
+      Action    : "sts:AssumeRole",
+      Effect    : "Allow",
+      Principal : { Service : "ec2.amazonaws.com" }
     }]
   })
 }
 
-# Attach necessary policies to the control plane IAM role
-resource "aws_iam_role_policy_attachment" "eks_cluster_policy" {
-  role       = aws_iam_role.control_plane_role.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
-}
-
-resource "aws_iam_role_policy_attachment" "ebs_csi_policy" {
-  role       = aws_iam_role.control_plane_role.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
-}
-
-resource "aws_iam_role_policy_attachment" "ecr_readonly" {
-  role       = aws_iam_role.control_plane_role.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
-}
-
-resource "aws_iam_role_policy_attachment" "s3_full_access" {
+# Attach base policies (adjust these to least‑privilege in future)
+resource "aws_iam_role_policy_attachment" "control_plane_s3_access" {
   role       = aws_iam_role.control_plane_role.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonS3FullAccess"
 }
 
-resource "aws_iam_role_policy_attachment" "secrets_manager_access" {
-  role       = aws_iam_role.control_plane_role.name
-  policy_arn = "arn:aws:iam::aws:policy/SecretsManagerReadWrite"
-}
-
-# Instance profile for EC2
 resource "aws_iam_instance_profile" "control_plane_profile" {
   name = "${var.cluster_name}-control-plane-profile"
   role = aws_iam_role.control_plane_role.name
 }
 
-resource "aws_iam_instance_profile" "worker_profile" {
-  name = "${var.cluster_name}-worker-profile"
-  role = aws_iam_role.control_plane_role.name
+# ---- Worker role (separate for PoLP) -----------------------------------
+resource "aws_iam_role" "worker_role" {
+  name = "${var.cluster_name}-worker-role"
+
+  assume_role_policy = jsonencode({
+    Version : "2012-10-17",
+    Statement : [{
+      Action    : "sts:AssumeRole",
+      Effect    : "Allow",
+      Principal : { Service : "ec2.amazonaws.com" }
+    }]
+  })
 }
 
+resource "aws_iam_role_policy_attachment" "worker_ecr_readonly" {
+  role       = aws_iam_role.worker_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+}
+
+resource "aws_iam_instance_profile" "worker_profile" {
+  name = "${var.cluster_name}-worker-profile"
+  role = aws_iam_role.worker_role.name
+}
+
+#######################################
+# 3. Subnets & Routing                                                    #
+#######################################
+
 resource "aws_subnet" "public_subnets" {
-  count             = 2
+  count             = length(var.public_subnet_cidrs)
   vpc_id            = aws_vpc.k8s_vpc.id
-  cidr_block        = cidrsubnet(var.vpc_cidr, 8, count.index)
+  cidr_block        = var.public_subnet_cidrs[count.index]
   availability_zone = var.availability_zones[count.index]
 
   tags = {
-    Name = "${var.cluster_name}-public-subnet-${count.index}"
+    Name = "${var.cluster_name}-public-${count.index}"
+    "kubernetes.io/role/elb" = "1"   # handy for future LB
   }
 }
 
@@ -95,18 +105,22 @@ resource "aws_route" "igw_route" {
 }
 
 resource "aws_route_table_association" "public_assoc" {
-  count          = 2
+  count          = length(aws_subnet.public_subnets)
   subnet_id      = aws_subnet.public_subnets[count.index].id
   route_table_id = aws_route_table.public_rt.id
 }
 
+#######################################
+# 4. Security Groups                                                      #
+#######################################
+
 resource "aws_security_group" "control_plane_sg" {
   name        = "${var.cluster_name}-control-plane-sg"
-  description = "Allow SSH, Kubernetes API, and internal VPC traffic"
+  description = "K8s control‑plane access"
   vpc_id      = aws_vpc.k8s_vpc.id
 
   ingress {
-    description = "SSH from anywhere"
+    description = "SSH"
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
@@ -114,65 +128,30 @@ resource "aws_security_group" "control_plane_sg" {
   }
 
   ingress {
-    description = "Kubernetes API traffic"
+    description = "Kubernetes API"
     from_port   = 6443
     to_port     = 6443
     protocol    = "tcp"
-    cidr_blocks = [var.vpc_cidr]
-  }
-
-  ingress {
-    description = "Allow all traffic within the VPC"
-    from_port   = 0
-    to_port     = 65535
-    protocol    = "tcp"
-    cidr_blocks = [var.vpc_cidr]
+    cidr_blocks = ["0.0.0.0/0"] # tighten later
   }
 
   egress {
-    description = "Allow all outbound traffic"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = {
-    Name = "${var.cluster_name}-control-plane-sg"
-  }
-}
-
-resource "aws_instance" "control_plane" {
-  ami                         = var.ami_id
-  instance_type               = var.instance_type_control_plane
-  subnet_id                   = aws_subnet.public_subnets[0].id
-  key_name                    = var.key_pair_name
-  associate_public_ip_address = true
-  vpc_security_group_ids      = [aws_security_group.control_plane_sg.id]
-
-  user_data = file("${path.module}/user_data_control_plane.sh")
-  iam_instance_profile = aws_iam_instance_profile.control_plane_profile.name
-
-  tags = {
-    Name = "${var.cluster_name}-control-plane"
-  }
-}
-
-resource "aws_eip" "control_plane_eip" {
-  instance = aws_instance.control_plane.id
-
-  tags = {
-    Name = "${var.cluster_name}-control-plane-eip"
-  }
+  tags = { Name = "${var.cluster_name}-control-plane-sg" }
 }
 
 resource "aws_security_group" "worker_sg" {
   name        = "${var.cluster_name}-worker-sg"
-  description = "Allow traffic for worker nodes"
+  description = "K8s workers"
   vpc_id      = aws_vpc.k8s_vpc.id
 
   ingress {
-    description = "SSH from anywhere"
+    description = "SSH"
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
@@ -180,7 +159,7 @@ resource "aws_security_group" "worker_sg" {
   }
 
   ingress {
-    description = "Allow all traffic from within VPC"
+    description = "Pods / intra‑cluster"
     from_port   = 0
     to_port     = 65535
     protocol    = "tcp"
@@ -188,28 +167,75 @@ resource "aws_security_group" "worker_sg" {
   }
 
   egress {
-    description = "Allow all outbound traffic"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = {
-    Name = "${var.cluster_name}-worker-sg"
+  tags = { Name = "${var.cluster_name}-worker-sg" }
+}
+
+#######################################
+# 5. CONTROL‑PLANE ASG (new)                                             #
+#######################################
+
+resource "aws_launch_template" "control_plane_template" {
+  name_prefix   = "${var.cluster_name}-control-plane-"
+  image_id      = var.ami_id
+  instance_type = var.instance_type_control_plane
+  key_name      = var.key_pair_name
+
+  iam_instance_profile {
+    name = aws_iam_instance_profile.control_plane_profile.name
+  }
+
+  network_interfaces {
+    associate_public_ip_address = true
+    security_groups             = [aws_security_group.control_plane_sg.id]
+  }
+
+  user_data = base64encode(file("${path.module}/user_data_control_plane.sh"))
+
+  tag_specifications {
+    resource_type = "instance"
+    tags = { Name = "${var.cluster_name}-control-plane" }
   }
 }
+
+resource "aws_autoscaling_group" "control_plane_asg" {
+  name                = "${var.cluster_name}-control-plane-asg"
+  min_size            = var.min_control_plane_nodes
+  desired_capacity    = var.desired_control_plane_nodes
+  max_size            = var.max_control_plane_nodes
+  vpc_zone_identifier = aws_subnet.public_subnets[*].id
+  health_check_type   = "EC2"
+
+  launch_template {
+    id      = aws_launch_template.control_plane_template.id
+    version = "$Latest"
+  }
+
+  tag {
+    key                 = "Name"
+    value               = "${var.cluster_name}-control-plane"
+    propagate_at_launch = true
+  }
+
+  lifecycle { create_before_destroy = true }
+}
+
+#######################################
+# 6. WORKER  Launch Template + ASG                                        #
+#######################################
 
 resource "aws_launch_template" "worker_template" {
   name_prefix   = "${var.cluster_name}-worker-"
   image_id      = var.ami_id
   instance_type = var.instance_type_worker
+  key_name      = var.key_pair_name
 
-  key_name = var.key_pair_name
-
-  iam_instance_profile {
-    name = aws_iam_instance_profile.worker_profile.name
-  }
+  iam_instance_profile { name = aws_iam_instance_profile.worker_profile.name }
 
   network_interfaces {
     associate_public_ip_address = true
@@ -220,19 +246,17 @@ resource "aws_launch_template" "worker_template" {
 
   tag_specifications {
     resource_type = "instance"
-    tags = {
-      Name = "${var.cluster_name}-worker"
-    }
+    tags = { Name = "${var.cluster_name}-worker" }
   }
 }
 
 resource "aws_autoscaling_group" "worker_asg" {
-  name                      = "${var.cluster_name}-worker-asg"
-  desired_capacity          = var.desired_worker_nodes
-  max_size                  = var.max_worker_nodes
-  min_size                  = var.min_worker_nodes
-  vpc_zone_identifier       = aws_subnet.public_subnets[*].id
-  health_check_type         = "EC2"
+  name                = "${var.cluster_name}-worker-asg"
+  min_size            = var.min_worker_nodes
+  desired_capacity    = var.desired_worker_nodes
+  max_size            = var.max_worker_nodes
+  vpc_zone_identifier = aws_subnet.public_subnets[*].id
+  health_check_type   = "EC2"
 
   launch_template {
     id      = aws_launch_template.worker_template.id
@@ -245,7 +269,5 @@ resource "aws_autoscaling_group" "worker_asg" {
     propagate_at_launch = true
   }
 
-  lifecycle {
-    create_before_destroy = true
-  }
+  lifecycle { create_before_destroy = true }
 }
