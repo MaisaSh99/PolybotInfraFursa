@@ -28,7 +28,7 @@ max_worker_nodes     = 3
 desired_worker_nodes = 2
 
 # -------------------------------------------------------------------
-#  VPC (reuse m-polybot-vpc and create new subnets)
+#  VPC (reuse m-polybot-vpc and use existing subnets)
 # -------------------------------------------------------------------
 use_existing_vpc   = true
 existing_vpc_name  = "m-polybot-vpc"
@@ -36,11 +36,11 @@ existing_vpc_id    = "vpc-0cce4b185bc2b19df"
 vpc_cidr           = "10.0.0.0/16"
 
 # -------------------------------------------------------------------
-#  Re-use the two public subnets that exist in m-polybot-vpc
+#  Re-use the correct subnets that exist in m-polybot-vpc
 # -------------------------------------------------------------------
 public_subnet_ids = [
-  "subnet-0b0dd5d582844c3ff", # 10.0.0.0/24 in us-east-2a (m-polybot-subnet-a)
-  "subnet-0ad61d1d84a4a863f"  # 10.0.1.0/24 in us-east-2b (m-polybot-subnet-b)
+  "subnet-0bddd5d582814c3ff", # 10.0.0.0/24 in us-east-2a (m-ploybot-subnet-a)
+  "subnet-0ad61d1d84a4a8e3f"  # 10.0.1.0/24 in us-east-2b (m-polybot-subnet-b)
 ]
 
 # -------------------------------------------------------------------
