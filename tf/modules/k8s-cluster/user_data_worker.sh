@@ -36,12 +36,12 @@ swapoff -a
 (crontab -l ; echo "@reboot /sbin/swapoff -a") | crontab -
 
 # Auto-join the worker node to the Kubernetes cluster
-# Fetch the join command from AWS SSM Parameter Store
-JOIN_COMMAND=$(aws ssm get-parameter \
+# Fetch the join command from AWS Secrets Manager
+JOIN_COMMAND=$(aws secretsmanager get-secret-value \
   --region us-east-2 \
-  --name /polybot/k8s/joinCommand \
-  --query 'Parameter.Value' \
+  --secret-id K8S_JOIN_COMMAND \
+  --query SecretString \
   --output text)
 
 # Execute the join command
-$JOIN_COMMAND --ignore-preflight-errors=all
+eval "$JOIN_COMMAND"
