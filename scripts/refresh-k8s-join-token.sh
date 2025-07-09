@@ -14,8 +14,8 @@ if ! command -v aws &> /dev/null; then
   sudo ./aws/install
 fi
 
-# Update Secrets Manager
+# Update Secrets Manager (use AWS_REGION from environment)
 aws secretsmanager put-secret-value \
   --secret-id K8S_JOIN_COMMAND \
   --secret-string file:///tmp/k8s_join.sh \
-  --region us-east-2
+  --region ${AWS_REGION:-us-east-2}
