@@ -1,0 +1,88 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: polybot
+  namespace: prod
+  labels:
+    app: polybot
+    environment: prod
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: polybot
+      environment: prod
+  template:
+    metadata:
+      labels:
+        app: polybot
+        environment: prod
+    spec:
+      containers:
+      - name: polybot
+        image: maisash/polybot-prod
+        ports:
+        - containerPort: 8443
+          name: webhook
+        env:
+        - name: TELEGRAM_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: polybot-secrets
+              key: telegram-token
+        - name: TELEGRAM_APP_URL
+          value: "https://maisaprod.fursa.click"
+        - name: YOLO_SERVICE_URL
+          value: "http://yolo-service:8080"
+        - name: ENVIRONMENT
+          value: "prod"
+        resources:
+          requests:
+            cpu: 200m
+            memory: 256Mi
+          limits:
+            cpu: 1000m
+            memory: 1Gi
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8443
+            scheme: HTTPS
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8443
+            scheme: HTTPS
+          initialDelaySeconds: 5
+          periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: polybot-service
+  namespace: prod
+  labels:
+    app: polybot
+    environment: prod
+spec:
+  selector:
+    app: polybot
+    environment: prod
+  ports:
+  - port: 8443
+    targetPort: 8443
+    protocol: TCP
+    name: webhook
+  type: ClusterIP
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: polybot-secrets
+  namespace: prod
+type: Opaque
+data:
+  telegram-token: ODE3NDY1NzI3NTpBQUYwM1k4UTNwMlNESlZTSTRpanRpWmM3WUNpd3pwQVNFdHc=
