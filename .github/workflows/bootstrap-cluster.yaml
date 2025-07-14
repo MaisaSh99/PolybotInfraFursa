@@ -21,97 +21,111 @@ jobs:
       with:
         version: 'v1.28.0'
 
-    - name: Create kubeconfig for external access
-      run: |
-        mkdir -p ~/.kube
-        
-        # Create kubeconfig that skips TLS verification for the public IP
-        cat > ~/.kube/config << EOF
-        apiVersion: v1
-        clusters:
-        - cluster:
-            insecure-skip-tls-verify: true
-            server: https://${{ secrets.CONTROL_PLANE_IP }}:6443
-          name: kubernetes
-        contexts:
-        - context:
-            cluster: kubernetes
-            user: kubernetes-admin
-          name: kubernetes-admin@kubernetes
-        current-context: kubernetes-admin@kubernetes
-        kind: Config
-        preferences: {}
-        users:
-        - name: kubernetes-admin
-          user:
-            token: ${{ secrets.KUBE_TOKEN }}
-        EOF
-        
-        chmod 600 ~/.kube/config
-
-    - name: Get service account token from control plane
-      if: ${{ !env.KUBE_TOKEN }}
+    - name: Get kubeconfig from control plane
       uses: appleboy/ssh-action@v0.1.10
       with:
         host: ${{ secrets.CONTROL_PLANE_IP }}
         username: ubuntu
         key: ${{ secrets.SSH_PRIVATE_KEY }}
+        timeout: 60s
         script: |
-          # Create a service account for GitHub Actions
-          sudo kubectl --kubeconfig=/etc/kubernetes/admin.conf apply -f - << 'EOF'
+          echo "=== Getting kubeconfig from control plane ==="
+          
+          PUBLIC_IP="${{ secrets.CONTROL_PLANE_IP }}"
+          
+          # Get the client certificate and key from the admin config
+          CLIENT_CERT=$(sudo grep client-certificate-data /etc/kubernetes/admin.conf | awk '{print $2}')
+          CLIENT_KEY=$(sudo grep client-key-data /etc/kubernetes/admin.conf | awk '{print $2}')
+          
+          # Create kubeconfig for GitHub Actions (without CA cert, using insecure-skip-tls-verify)
+          cat > /tmp/github-kubeconfig << EOF
           apiVersion: v1
-          kind: ServiceAccount
-          metadata:
-            name: github-actions
-            namespace: kube-system
-          ---
-          apiVersion: rbac.authorization.k8s.io/v1
-          kind: ClusterRoleBinding
-          metadata:
-            name: github-actions
-          roleRef:
-            apiGroup: rbac.authorization.k8s.io
-            kind: ClusterRole
-            name: cluster-admin
-          subjects:
-          - kind: ServiceAccount
-            name: github-actions
-            namespace: kube-system
-          ---
-          apiVersion: v1
-          kind: Secret
-          metadata:
-            name: github-actions-token
-            namespace: kube-system
-            annotations:
-              kubernetes.io/service-account.name: github-actions
-          type: kubernetes.io/service-account-token
+          clusters:
+          - cluster:
+              server: https://$PUBLIC_IP:6443
+              insecure-skip-tls-verify: true
+            name: kubernetes
+          contexts:
+          - context:
+              cluster: kubernetes
+              user: kubernetes-admin
+            name: kubernetes-admin@kubernetes
+          current-context: kubernetes-admin@kubernetes
+          kind: Config
+          preferences: {}
+          users:
+          - name: kubernetes-admin
+            user:
+              client-certificate-data: $CLIENT_CERT
+              client-key-data: $CLIENT_KEY
           EOF
           
-          # Wait for token to be created
-          sleep 10
+          # Test the kubeconfig locally first
+          echo "=== Testing kubeconfig locally ==="
+          if kubectl --kubeconfig=/tmp/github-kubeconfig get nodes; then
+            echo "✅ Kubeconfig test successful"
+          else
+            echo "❌ Kubeconfig test failed"
+            exit 1
+          fi
           
-          # Get the token
-          sudo kubectl --kubeconfig=/etc/kubernetes/admin.conf get secret github-actions-token -n kube-system -o jsonpath='{.data.token}' | base64 -d
-      id: get_token
+          # Output the base64 encoded kubeconfig
+          echo "KUBECONFIG_START"
+          cat /tmp/github-kubeconfig | base64 -w 0
+          echo ""
+          echo "KUBECONFIG_END"
+      id: get_kubeconfig
 
-    - name: Update kubeconfig with token
-      if: ${{ steps.get_token.outputs.stdout }}
+    - name: Configure kubectl
       run: |
-        # Update kubeconfig with the actual token
-        kubectl config set-credentials kubernetes-admin --token="${{ steps.get_token.outputs.stdout }}"
+        mkdir -p ~/.kube
+        
+        # Extract kubeconfig from SSH output
+        FULL_OUTPUT="${{ steps.get_kubeconfig.outputs.stdout }}"
+        echo "=== Extracting kubeconfig ==="
+        
+        # Extract base64 content between markers
+        BASE64_CONTENT=$(echo "$FULL_OUTPUT" | sed -n '/KUBECONFIG_START/,/KUBECONFIG_END/p' | grep -v "KUBECONFIG_START\|KUBECONFIG_END" | tr -d '\n')
+        
+        if [ -z "$BASE64_CONTENT" ]; then
+          echo "❌ Failed to extract kubeconfig from SSH output"
+          echo "=== Full SSH Output ==="
+          echo "$FULL_OUTPUT"
+          exit 1
+        fi
+        
+        # Decode kubeconfig
+        echo "$BASE64_CONTENT" | base64 -d > ~/.kube/config
+        chmod 600 ~/.kube/config
+        
+        # Verify kubeconfig
+        if [ ! -s ~/.kube/config ]; then
+          echo "❌ Kubeconfig file is empty"
+          exit 1
+        fi
+        
+        echo "✅ Kubeconfig configured ($(wc -c < ~/.kube/config) bytes)"
+        
+        # Show server configuration (without sensitive data)
+        echo "=== Kubeconfig server ==="
+        grep "server:" ~/.kube/config
 
     - name: Test cluster connection
       run: |
         echo "=== Testing cluster connection ==="
-        kubectl cluster-info
-        kubectl get nodes
-        kubectl get namespaces
+        kubectl cluster-info --request-timeout=30s
+        kubectl get nodes --request-timeout=30s
 
     - name: Wait for cluster to be ready
       run: |
         echo "=== Waiting for all nodes to be ready ==="
         kubectl wait --for=condition=Ready nodes --all --timeout=300s
+
+    - name: Create namespaces
+      run: |
+        echo "=== Creating namespaces ==="
+        kubectl apply -f k8s/namespaces/
+        kubectl get namespaces
 
     - name: Install cert-manager
       run: |
@@ -123,21 +137,12 @@ jobs:
         kubectl wait --for=condition=available deployment/cert-manager-cainjector -n cert-manager --timeout=300s
         kubectl wait --for=condition=available deployment/cert-manager-webhook -n cert-manager --timeout=300s
 
-    - name: Create namespaces
-      run: |
-        echo "=== Creating namespaces ==="
-        kubectl apply -f k8s/namespaces/
-        
-        echo "=== Listing namespaces ==="
-        kubectl get namespaces
-
     - name: Install metrics-server
       run: |
         echo "=== Installing metrics-server ==="
         kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
         
         # Patch metrics-server for development environments
-        echo "=== Patching metrics-server ==="
         kubectl patch deployment metrics-server -n kube-system --type='json' -p='[
           {
             "op": "add",
@@ -192,32 +197,37 @@ jobs:
 
     - name: Get access information
       run: |
-        echo "=== Cluster Access Information ==="
+        echo "=== 🎉 KUBERNETES CLUSTER BOOTSTRAP COMPLETE! 🎉 ==="
+        echo ""
+        echo "=== Cluster Information ==="
         echo "Control Plane IP: ${{ secrets.CONTROL_PLANE_IP }}"
         echo "Kubernetes API: https://${{ secrets.CONTROL_PLANE_IP }}:6443"
         echo ""
         
-        echo "=== Service Information ==="
-        echo "ArgoCD Server:"
-        kubectl get svc argocd-server -n argocd -o wide 2>/dev/null || echo "ArgoCD service not found"
+        echo "=== 🔐 ArgoCD Admin Password ==="
+        ARGOCD_PASSWORD=$(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" 2>/dev/null | base64 -d || echo "Not found")
+        echo "Username: admin"
+        echo "Password: $ARGOCD_PASSWORD"
+        echo ""
         
+        echo "=== 📊 Service Endpoints ==="
+        echo "ArgoCD Server:"
+        kubectl get svc argocd-server -n argocd -o wide 2>/dev/null || echo "  Not ready yet"
         echo ""
         echo "Grafana Dashboard:"
-        kubectl get svc grafana-service -n monitoring -o wide 2>/dev/null || echo "Grafana service not found"
-        
+        kubectl get svc grafana-service -n monitoring -o wide 2>/dev/null || echo "  Not ready yet"
         echo ""
         echo "Nginx Ingress Controller:"
-        kubectl get svc ingress-nginx -n ingress-nginx -o wide 2>/dev/null || echo "Nginx Ingress service not found"
-        
-        echo ""
-        echo "=== ArgoCD Admin Password ==="
-        kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" 2>/dev/null | base64 -d || echo "ArgoCD password secret not found"
+        kubectl get svc ingress-nginx -n ingress-nginx -o wide 2>/dev/null || echo "  Not ready yet"
         echo ""
         
+        echo "=== 📈 Cluster Status ==="
+        kubectl get nodes
         echo ""
-        echo "=== All Deployments ==="
+        
+        echo "=== 🚀 All Deployments ==="
         kubectl get deployments --all-namespaces
-        
         echo ""
-        echo "=== All Services ==="
-        kubectl get services --all-namespaces
+        
+        echo "=== ✅ BOOTSTRAP SUCCESSFUL! ==="
+        echo "Your Kubernetes cluster is now ready for use!"
