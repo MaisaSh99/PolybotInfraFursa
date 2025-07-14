@@ -147,6 +147,7 @@ resource "aws_route_table_association" "public_assoc" {
   route_table_id = aws_route_table.public_rt[0].id
 }
 
+# FIXED SECURITY GROUP - Allow port 6443 from anywhere
 resource "aws_security_group" "control_plane_sg" {
   name        = "${var.cluster_name}-control-plane-sg"
   description = "Allow SSH, Kubernetes API, and internal VPC traffic"
@@ -161,7 +162,15 @@ resource "aws_security_group" "control_plane_sg" {
   }
 
   ingress {
-    description = "Kubernetes API traffic"
+    description = "Kubernetes API from anywhere (for GitHub Actions)"
+    from_port   = 6443
+    to_port     = 6443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "Kubernetes API traffic from VPC"
     from_port   = 6443
     to_port     = 6443
     protocol    = "tcp"
@@ -169,10 +178,18 @@ resource "aws_security_group" "control_plane_sg" {
   }
 
   ingress {
-    description = "Allow all traffic within the VPC"
+    description = "Allow all TCP traffic within the VPC"
     from_port   = 0
     to_port     = 65535
     protocol    = "tcp"
+    cidr_blocks = [local.vpc_cidr]
+  }
+
+  ingress {
+    description = "Allow all UDP traffic within the VPC"
+    from_port   = 0
+    to_port     = 65535
+    protocol    = "udp"
     cidr_blocks = [local.vpc_cidr]
   }
 
@@ -188,6 +205,14 @@ resource "aws_security_group" "control_plane_sg" {
     description = "Alternative HTTPS port"
     from_port   = 8443
     to_port     = 8443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "HTTP from anywhere"
+    from_port   = 80
+    to_port     = 80
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }

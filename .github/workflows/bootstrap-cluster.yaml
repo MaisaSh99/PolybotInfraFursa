@@ -21,20 +21,7 @@ jobs:
       with:
         version: 'v1.28.0'
 
-    - name: Test SSH connectivity
-      uses: appleboy/ssh-action@v0.1.10
-      with:
-        host: ${{ secrets.CONTROL_PLANE_IP }}
-        username: ubuntu
-        key: ${{ secrets.SSH_PRIVATE_KEY }}
-        script: |
-          echo "SSH connection successful"
-          whoami
-          pwd
-          ls -la /home/ubuntu/ || true
-          ls -la /etc/kubernetes/ || true
-
-    - name: Get and prepare kubeconfig from control plane
+    - name: Get kubeconfig from control plane
       uses: appleboy/ssh-action@v0.1.10
       with:
         host: ${{ secrets.CONTROL_PLANE_IP }}
@@ -43,101 +30,38 @@ jobs:
         timeout: 60s
         command_timeout: 120s
         script: |
-          echo "=== Checking if kubeconfig exists ==="
+          echo "=== Checking cluster status ==="
           
-          # First check if kubectl is working
-          if command -v kubectl &> /dev/null; then
-            echo "kubectl is installed"
-          else
-            echo "kubectl not found"
+          # Ensure kubeconfig exists and is properly configured
+          if [ ! -f ~/.kube/config ]; then
+            echo "Setting up kubeconfig..."
+            mkdir -p ~/.kube
+            sudo cp /etc/kubernetes/admin.conf ~/.kube/config
+            sudo chown ubuntu:ubuntu ~/.kube/config
+            
+            # Update to use public IP
+            PUBLIC_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4)
+            sed -i "s|server: https://.*:6443|server: https://$PUBLIC_IP:6443|g" ~/.kube/config
           fi
           
-          # Check for kubeconfig in user directory
-          if [ -f /home/ubuntu/.kube/config ]; then
-            echo "✅ Kubeconfig exists in user directory"
-          elif [ -f /etc/kubernetes/admin.conf ]; then
-            echo "Found admin.conf, copying to user directory..."
-            mkdir -p /home/ubuntu/.kube
-            sudo cp /etc/kubernetes/admin.conf /home/ubuntu/.kube/config
-            sudo chown ubuntu:ubuntu /home/ubuntu/.kube/config
-            echo "✅ Kubeconfig copied successfully"
-          else
-            echo "❌ ERROR: No kubeconfig found anywhere"
-            echo "Available files in /etc/kubernetes/:"
-            sudo ls -la /etc/kubernetes/ || true
-            exit 1
-          fi
+          echo "=== Testing local kubectl ==="
+          kubectl get nodes || echo "kubectl failed locally"
           
-          # Verify file has content
-          if [ ! -s /home/ubuntu/.kube/config ]; then
-            echo "❌ ERROR: Kubeconfig file is empty"
-            exit 1
-          fi
-          
-          echo "✅ Kubeconfig file has content ($(wc -c < /home/ubuntu/.kube/config) bytes)"
-          
-          # Show current server address
-          echo "=== Current server address ==="
-          grep "server:" /home/ubuntu/.kube/config || echo "No server line found"
-          
-          # Update server address to use public IP
-          echo "=== Updating server address ==="
-          CONTROL_PLANE_IP="${{ secrets.CONTROL_PLANE_IP }}"
-          cp /home/ubuntu/.kube/config /home/ubuntu/.kube/config.backup
-          sed -i "s|server: https://.*:6443|server: https://$CONTROL_PLANE_IP:6443|g" /home/ubuntu/.kube/config
-          
-          echo "=== Updated server address ==="
-          grep "server:" /home/ubuntu/.kube/config
-          
-          # Output the base64 encoded kubeconfig
-          echo "START_KUBECONFIG_BASE64"
-          cat /home/ubuntu/.kube/config | base64 -w 0
-          echo ""
-          echo "END_KUBECONFIG_BASE64"
-        script_stop: true
+          echo "=== Outputting kubeconfig ==="
+          cat ~/.kube/config | base64 -w 0
       id: get_kubeconfig
 
     - name: Configure kubectl
       run: |
         mkdir -p ~/.kube
-        
-        # Extract the base64 kubeconfig from SSH output
-        FULL_OUTPUT="${{ steps.get_kubeconfig.outputs.stdout }}"
-        echo "=== Extracting kubeconfig from SSH output ==="
-        
-        # Extract content between markers
-        BASE64_CONTENT=$(echo "$FULL_OUTPUT" | sed -n '/START_KUBECONFIG_BASE64/,/END_KUBECONFIG_BASE64/p' | grep -v "START_KUBECONFIG_BASE64\|END_KUBECONFIG_BASE64" | tr -d '\n')
-        
-        if [ -z "$BASE64_CONTENT" ]; then
-          echo "❌ ERROR: Could not extract base64 content"
-          echo "Full SSH output:"
-          echo "$FULL_OUTPUT"
-          exit 1
-        fi
-        
-        # Decode and save kubeconfig
-        echo "$BASE64_CONTENT" | base64 -d > ~/.kube/config
+        echo "${{ steps.get_kubeconfig.outputs.stdout }}" | base64 -d > ~/.kube/config
         chmod 600 ~/.kube/config
-        
-        # Verify the file
-        if [ ! -s ~/.kube/config ]; then
-          echo "❌ ERROR: Decoded kubeconfig is empty"
-          exit 1
-        fi
-        
-        echo "✅ Kubeconfig configured successfully ($(wc -c < ~/.kube/config) bytes)"
 
-    - name: Verify cluster connection
+    - name: Test cluster connection
       run: |
         echo "=== Testing cluster connection ==="
-        echo "Kubeconfig server:"
-        grep "server:" ~/.kube/config
-        
-        echo "=== Cluster info ==="
-        kubectl cluster-info --request-timeout=30s || echo "Cluster info failed"
-        
-        echo "=== Get nodes ==="
-        kubectl get nodes --request-timeout=30s || echo "Get nodes failed"
+        kubectl cluster-info
+        kubectl get nodes
 
     - name: Wait for cluster to be ready
       run: |
@@ -216,21 +140,29 @@ jobs:
     - name: Get access information
       run: |
         echo "=== Cluster Access Information ==="
+        echo "Control Plane IP: ${{ secrets.CONTROL_PLANE_IP }}"
+        echo ""
         echo "ArgoCD Server:"
-        kubectl get svc argocd-server -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' || \
-        kubectl get svc argocd-server -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+        kubectl get svc argocd-server -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || \
+        kubectl get svc argocd-server -n argocd -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || \
+        echo "LoadBalancer IP not yet assigned"
         echo ""
         
         echo "Grafana Dashboard:"
-        kubectl get svc grafana-service -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' || \
-        kubectl get svc grafana-service -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+        kubectl get svc grafana-service -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || \
+        kubectl get svc grafana-service -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || \
+        echo "LoadBalancer IP not yet assigned"
         echo ""
         
         echo "Nginx Ingress Controller:"
-        kubectl get svc ingress-nginx -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' || \
-        kubectl get svc ingress-nginx -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+        kubectl get svc ingress-nginx -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || \
+        kubectl get svc ingress-nginx -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || \
+        echo "LoadBalancer IP not yet assigned"
         echo ""
         
         echo "ArgoCD Admin Password:"
-        kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
+        kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" 2>/dev/null | base64 -d || echo "Secret not found"
         echo ""
+        
+        echo "=== All deployments ==="
+        kubectl get deployments --all-namespaces
