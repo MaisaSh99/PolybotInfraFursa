@@ -20,7 +20,7 @@ spec:
     spec:
       containers:
       - name: polybot
-        image: maisash/polybot-dev
+        image: maisash/polybot-dev:13
         ports:
         - containerPort: 8443
           name: webhook

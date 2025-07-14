@@ -25,7 +25,7 @@ spec:
     spec:
       containers:
       - name: yolo
-        image: maisash/yolo-prod
+        image: maisash/yolo-prod:18
         ports:
         - containerPort: 8080
           name: http
