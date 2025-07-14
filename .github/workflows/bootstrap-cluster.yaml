@@ -21,151 +21,128 @@ jobs:
       with:
         version: 'v1.28.0'
 
-    - name: Get and prepare kubeconfig from control plane
+    - name: Test SSH connectivity
       uses: appleboy/ssh-action@v0.1.10
       with:
         host: ${{ secrets.CONTROL_PLANE_IP }}
         username: ubuntu
         key: ${{ secrets.SSH_PRIVATE_KEY }}
         script: |
-          set -e  # Exit on any error
-          
+          echo "SSH connection successful"
+          whoami
+          pwd
+          ls -la /home/ubuntu/ || true
+          ls -la /etc/kubernetes/ || true
+
+    - name: Get and prepare kubeconfig from control plane
+      uses: appleboy/ssh-action@v0.1.10
+      with:
+        host: ${{ secrets.CONTROL_PLANE_IP }}
+        username: ubuntu
+        key: ${{ secrets.SSH_PRIVATE_KEY }}
+        timeout: 60s
+        command_timeout: 120s
+        script: |
           echo "=== Checking if kubeconfig exists ==="
-          if [ ! -f /home/ubuntu/.kube/config ]; then
-            echo "Kubeconfig not found at /home/ubuntu/.kube/config"
-            echo "Checking if cluster is initialized..."
-            if [ -f /etc/kubernetes/admin.conf ]; then
-              echo "Found admin.conf, copying to user directory..."
-              mkdir -p /home/ubuntu/.kube
-              sudo cp /etc/kubernetes/admin.conf /home/ubuntu/.kube/config
-              sudo chown ubuntu:ubuntu /home/ubuntu/.kube/config
-              echo "✅ Kubeconfig copied successfully"
-            else
-              echo "❌ ERROR: No kubeconfig found. Cluster may not be initialized."
-              echo "Checking for kubeadm status..."
-              sudo systemctl status kubelet || true
-              ls -la /etc/kubernetes/ || true
-              exit 1
-            fi
+          
+          # First check if kubectl is working
+          if command -v kubectl &> /dev/null; then
+            echo "kubectl is installed"
           else
-            echo "✅ Kubeconfig already exists"
+            echo "kubectl not found"
           fi
           
-          echo "=== Verifying kubeconfig file ==="
+          # Check for kubeconfig in user directory
+          if [ -f /home/ubuntu/.kube/config ]; then
+            echo "✅ Kubeconfig exists in user directory"
+          elif [ -f /etc/kubernetes/admin.conf ]; then
+            echo "Found admin.conf, copying to user directory..."
+            mkdir -p /home/ubuntu/.kube
+            sudo cp /etc/kubernetes/admin.conf /home/ubuntu/.kube/config
+            sudo chown ubuntu:ubuntu /home/ubuntu/.kube/config
+            echo "✅ Kubeconfig copied successfully"
+          else
+            echo "❌ ERROR: No kubeconfig found anywhere"
+            echo "Available files in /etc/kubernetes/:"
+            sudo ls -la /etc/kubernetes/ || true
+            exit 1
+          fi
+          
+          # Verify file has content
           if [ ! -s /home/ubuntu/.kube/config ]; then
             echo "❌ ERROR: Kubeconfig file is empty"
             exit 1
           fi
+          
           echo "✅ Kubeconfig file has content ($(wc -c < /home/ubuntu/.kube/config) bytes)"
           
-          echo "=== Original kubeconfig server address ==="
+          # Show current server address
+          echo "=== Current server address ==="
           grep "server:" /home/ubuntu/.kube/config || echo "No server line found"
           
-          echo "=== Updating kubeconfig server address ==="
-          # Replace localhost/127.0.0.1 with the actual control plane IP
+          # Update server address to use public IP
+          echo "=== Updating server address ==="
           CONTROL_PLANE_IP="${{ secrets.CONTROL_PLANE_IP }}"
-          echo "Using control plane IP: $CONTROL_PLANE_IP"
+          cp /home/ubuntu/.kube/config /home/ubuntu/.kube/config.backup
           sed -i "s|server: https://.*:6443|server: https://$CONTROL_PLANE_IP:6443|g" /home/ubuntu/.kube/config
           
-          echo "=== Updated kubeconfig server address ==="
+          echo "=== Updated server address ==="
           grep "server:" /home/ubuntu/.kube/config
           
-          echo "=== Testing local kubectl connection ==="
-          kubectl get nodes --kubeconfig=/home/ubuntu/.kube/config || echo "Local kubectl test failed"
-          
-          echo "=== Encoding kubeconfig ==="
-          echo "START_BASE64_KUBECONFIG"
+          # Output the base64 encoded kubeconfig
+          echo "START_KUBECONFIG_BASE64"
           cat /home/ubuntu/.kube/config | base64 -w 0
           echo ""
-          echo "END_BASE64_KUBECONFIG"
+          echo "END_KUBECONFIG_BASE64"
         script_stop: true
       id: get_kubeconfig
-
-    - name: Debug SSH output
-      run: |
-        echo "=== SSH Step Output Length ==="
-        echo "Length: ${#SSH_OUTPUT}"
-        echo "First 200 chars:"
-        echo "$SSH_OUTPUT" | head -c 200
-        echo ""
-        echo "Last 200 chars:"
-        echo "$SSH_OUTPUT" | tail -c 200
-        echo ""
-      env:
-        SSH_OUTPUT: ${{ steps.get_kubeconfig.outputs.stdout }}
 
     - name: Configure kubectl
       run: |
         mkdir -p ~/.kube
         
-        # Extract just the base64 content between markers
+        # Extract the base64 kubeconfig from SSH output
         FULL_OUTPUT="${{ steps.get_kubeconfig.outputs.stdout }}"
-        BASE64_CONTENT=$(echo "$FULL_OUTPUT" | sed -n '/START_BASE64_KUBECONFIG/,/END_BASE64_KUBECONFIG/p' | grep -v "START_BASE64_KUBECONFIG\|END_BASE64_KUBECONFIG")
+        echo "=== Extracting kubeconfig from SSH output ==="
         
-        # Check if we extracted valid base64 content
+        # Extract content between markers
+        BASE64_CONTENT=$(echo "$FULL_OUTPUT" | sed -n '/START_KUBECONFIG_BASE64/,/END_KUBECONFIG_BASE64/p' | grep -v "START_KUBECONFIG_BASE64\|END_KUBECONFIG_BASE64" | tr -d '\n')
+        
         if [ -z "$BASE64_CONTENT" ]; then
-          echo "ERROR: No base64 content found between markers"
+          echo "❌ ERROR: Could not extract base64 content"
           echo "Full SSH output:"
           echo "$FULL_OUTPUT"
           exit 1
         fi
         
-        # Decode the base64 content
+        # Decode and save kubeconfig
         echo "$BASE64_CONTENT" | base64 -d > ~/.kube/config
-        
-        # Check if file was created and has content
-        if [ ! -f ~/.kube/config ]; then
-          echo "ERROR: Kubeconfig file was not created"
-          exit 1
-        fi
-        
-        if [ ! -s ~/.kube/config ]; then
-          echo "ERROR: Kubeconfig file is empty"
-          echo "Base64 content was:"
-          echo "$BASE64_CONTENT" | head -c 200
-          exit 1
-        fi
-        
         chmod 600 ~/.kube/config
         
-        echo "=== Kubeconfig file created successfully ==="
-        echo "File size: $(wc -c < ~/.kube/config) bytes"
-
-    - name: Debug kubeconfig
-      run: |
-        echo "=== Checking kubeconfig file ==="
-        if [ -f ~/.kube/config ]; then
-          echo "✅ Kubeconfig file exists"
-          echo "File size: $(wc -c < ~/.kube/config) bytes"
-          echo "File permissions: $(ls -la ~/.kube/config)"
-        else
-          echo "❌ Kubeconfig file does not exist"
+        # Verify the file
+        if [ ! -s ~/.kube/config ]; then
+          echo "❌ ERROR: Decoded kubeconfig is empty"
           exit 1
         fi
         
-        echo "=== Kubeconfig content (without certificates) ==="
-        if grep -v "certificate-authority-data\|client-certificate-data\|client-key-data" ~/.kube/config; then
-          echo "✅ Kubeconfig content displayed"
-        else
-          echo "❌ Failed to display kubeconfig content"
-          echo "Raw file content:"
-          cat ~/.kube/config || echo "Failed to cat file"
-        fi
-        
+        echo "✅ Kubeconfig configured successfully ($(wc -c < ~/.kube/config) bytes)"
+
+    - name: Verify cluster connection
+      run: |
         echo "=== Testing cluster connection ==="
-        kubectl cluster-info || echo "Cluster info failed"
-        kubectl get nodes || echo "Get nodes failed"
+        echo "Kubeconfig server:"
+        grep "server:" ~/.kube/config
+        
+        echo "=== Cluster info ==="
+        kubectl cluster-info --request-timeout=30s || echo "Cluster info failed"
+        
+        echo "=== Get nodes ==="
+        kubectl get nodes --request-timeout=30s || echo "Get nodes failed"
 
     - name: Wait for cluster to be ready
       run: |
         echo "=== Waiting for nodes to be ready ==="
         kubectl wait --for=condition=Ready nodes --all --timeout=300s
-
-    - name: Verify cluster is working
-      run: |
-        echo "=== Cluster verification ==="
-        kubectl get nodes -o wide
-        kubectl get pods --all-namespaces
 
     - name: Install cert-manager
       run: |
@@ -203,7 +180,6 @@ jobs:
     - name: Install ArgoCD
       run: |
         echo "=== Installing ArgoCD ==="
-        # Install ArgoCD
         kubectl create namespace argocd || true
         kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
         
