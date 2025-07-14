@@ -21,9 +21,27 @@ jobs:
       with:
         version: 'v1.28.0'
 
+    - name: Get kubeconfig from control plane
+      uses: appleboy/ssh-action@v0.1.10
+      with:
+        host: ${{ secrets.CONTROL_PLANE_IP }}
+        username: ubuntu
+        key: ${{ secrets.SSH_PRIVATE_KEY }}
+        script: |
+          # Check if kubeconfig exists
+          if [ -f /home/ubuntu/.kube/config ]; then
+            cat /home/ubuntu/.kube/config | base64 -w 0
+          else
+            echo "ERROR: Kubeconfig not found. Make sure the cluster is initialized."
+            exit 1
+          fi
+        script_stop: true
+      id: get_kubeconfig
+
     - name: Configure kubectl
       run: |
-        echo "${{ secrets.KUBECONFIG }}" | base64 -d > ~/.kube/config
+        mkdir -p ~/.kube
+        echo "${{ steps.get_kubeconfig.outputs.stdout }}" | base64 -d > ~/.kube/config
         chmod 600 ~/.kube/config
 
     - name: Wait for cluster to be ready
