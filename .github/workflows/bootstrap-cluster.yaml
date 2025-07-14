@@ -21,20 +21,41 @@ jobs:
       with:
         version: 'v1.28.0'
 
-    - name: Get kubeconfig from control plane
+    - name: Get and prepare kubeconfig from control plane
       uses: appleboy/ssh-action@v0.1.10
       with:
         host: ${{ secrets.CONTROL_PLANE_IP }}
         username: ubuntu
         key: ${{ secrets.SSH_PRIVATE_KEY }}
         script: |
-          # Check if kubeconfig exists
-          if [ -f /home/ubuntu/.kube/config ]; then
-            cat /home/ubuntu/.kube/config | base64 -w 0
-          else
-            echo "ERROR: Kubeconfig not found. Make sure the cluster is initialized."
-            exit 1
+          echo "=== Checking if kubeconfig exists ==="
+          if [ ! -f /home/ubuntu/.kube/config ]; then
+            echo "ERROR: Kubeconfig not found at /home/ubuntu/.kube/config"
+            echo "Checking if cluster is initialized..."
+            if [ -f /etc/kubernetes/admin.conf ]; then
+              echo "Found admin.conf, copying to user directory..."
+              mkdir -p /home/ubuntu/.kube
+              sudo cp /etc/kubernetes/admin.conf /home/ubuntu/.kube/config
+              sudo chown ubuntu:ubuntu /home/ubuntu/.kube/config
+            else
+              echo "ERROR: No kubeconfig found. Cluster may not be initialized."
+              exit 1
+            fi
           fi
+          
+          echo "=== Original kubeconfig server address ==="
+          grep "server:" /home/ubuntu/.kube/config || echo "No server line found"
+          
+          echo "=== Updating kubeconfig server address ==="
+          # Replace localhost/127.0.0.1 with the actual control plane IP
+          CONTROL_PLANE_IP="${{ secrets.CONTROL_PLANE_IP }}"
+          sed -i "s|server: https://.*:6443|server: https://$CONTROL_PLANE_IP:6443|g" /home/ubuntu/.kube/config
+          
+          echo "=== Updated kubeconfig server address ==="
+          grep "server:" /home/ubuntu/.kube/config
+          
+          echo "=== Encoding kubeconfig ==="
+          cat /home/ubuntu/.kube/config | base64 -w 0
         script_stop: true
       id: get_kubeconfig
 
@@ -44,12 +65,29 @@ jobs:
         echo "${{ steps.get_kubeconfig.outputs.stdout }}" | base64 -d > ~/.kube/config
         chmod 600 ~/.kube/config
 
+    - name: Debug kubeconfig
+      run: |
+        echo "=== Kubeconfig content (without certificates) ==="
+        grep -v "certificate-authority-data\|client-certificate-data\|client-key-data" ~/.kube/config
+        
+        echo "=== Testing cluster connection ==="
+        kubectl cluster-info || echo "Cluster info failed"
+        kubectl get nodes || echo "Get nodes failed"
+
     - name: Wait for cluster to be ready
       run: |
+        echo "=== Waiting for nodes to be ready ==="
         kubectl wait --for=condition=Ready nodes --all --timeout=300s
+
+    - name: Verify cluster is working
+      run: |
+        echo "=== Cluster verification ==="
+        kubectl get nodes -o wide
+        kubectl get pods --all-namespaces
 
     - name: Install cert-manager
       run: |
+        echo "=== Installing cert-manager ==="
         kubectl apply --validate=false -f https://github.com/jetstack/cert-manager/releases/download/v1.13.0/cert-manager.yaml
         kubectl wait --for=condition=available deployment/cert-manager -n cert-manager --timeout=300s
         kubectl wait --for=condition=available deployment/cert-manager-cainjector -n cert-manager --timeout=300s
@@ -57,10 +95,12 @@ jobs:
 
     - name: Create namespaces
       run: |
+        echo "=== Creating namespaces ==="
         kubectl apply -f k8s/namespaces/
 
     - name: Install metrics-server
       run: |
+        echo "=== Installing metrics-server ==="
         kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
         # Patch metrics-server for development environments
         kubectl patch deployment metrics-server -n kube-system --type='json' -p='[
@@ -74,11 +114,13 @@ jobs:
 
     - name: Install Nginx Ingress Controller
       run: |
+        echo "=== Installing Nginx Ingress Controller ==="
         kubectl apply -f k8s/nginx-ingress/
         kubectl wait --for=condition=available deployment/nginx-ingress-controller -n ingress-nginx --timeout=300s
 
     - name: Install ArgoCD
       run: |
+        echo "=== Installing ArgoCD ==="
         # Install ArgoCD
         kubectl create namespace argocd || true
         kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
@@ -91,10 +133,12 @@ jobs:
 
     - name: Create cert-manager issuers
       run: |
+        echo "=== Creating cert-manager issuers ==="
         kubectl apply -f k8s/cert-manager/
 
     - name: Install monitoring stack
       run: |
+        echo "=== Installing monitoring stack ==="
         kubectl apply -f k8s/monitoring/prometheus/
         kubectl apply -f k8s/monitoring/grafana/
         
@@ -104,6 +148,7 @@ jobs:
 
     - name: Configure ArgoCD applications
       run: |
+        echo "=== Configuring ArgoCD applications ==="
         # Wait a bit more for ArgoCD to be fully ready
         sleep 60
         
