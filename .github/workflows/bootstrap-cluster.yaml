@@ -2,14 +2,9 @@ name: Bootstrap Kubernetes Cluster
 
 on:
   workflow_dispatch:
-  workflow_run:
-    workflows: ["Initialize Kubernetes Cluster"]
-    types:
-      - completed
 
 jobs:
   bootstrap:
-    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -21,94 +16,35 @@ jobs:
       with:
         version: 'v1.28.0'
 
-    - name: Get kubeconfig from control plane
-      uses: appleboy/ssh-action@v0.1.10
-      with:
-        host: ${{ secrets.CONTROL_PLANE_IP }}
-        username: ubuntu
-        key: ${{ secrets.SSH_PRIVATE_KEY }}
-        timeout: 60s
-        script: |
-          echo "=== Getting kubeconfig from control plane ==="
-          
-          PUBLIC_IP="${{ secrets.CONTROL_PLANE_IP }}"
-          
-          # Get the client certificate and key from the admin config
-          CLIENT_CERT=$(sudo grep client-certificate-data /etc/kubernetes/admin.conf | awk '{print $2}')
-          CLIENT_KEY=$(sudo grep client-key-data /etc/kubernetes/admin.conf | awk '{print $2}')
-          
-          # Create kubeconfig for GitHub Actions (without CA cert, using insecure-skip-tls-verify)
-          cat > /tmp/github-kubeconfig << EOF
-          apiVersion: v1
-          clusters:
-          - cluster:
-              server: https://$PUBLIC_IP:6443
-              insecure-skip-tls-verify: true
-            name: kubernetes
-          contexts:
-          - context:
-              cluster: kubernetes
-              user: kubernetes-admin
-            name: kubernetes-admin@kubernetes
-          current-context: kubernetes-admin@kubernetes
-          kind: Config
-          preferences: {}
-          users:
-          - name: kubernetes-admin
-            user:
-              client-certificate-data: $CLIENT_CERT
-              client-key-data: $CLIENT_KEY
-          EOF
-          
-          # Test the kubeconfig locally first
-          echo "=== Testing kubeconfig locally ==="
-          if kubectl --kubeconfig=/tmp/github-kubeconfig get nodes; then
-            echo "✅ Kubeconfig test successful"
-          else
-            echo "❌ Kubeconfig test failed"
-            exit 1
-          fi
-          
-          # Output the base64 encoded kubeconfig
-          echo "KUBECONFIG_START"
-          cat /tmp/github-kubeconfig | base64 -w 0
-          echo ""
-          echo "KUBECONFIG_END"
-      id: get_kubeconfig
-
-    - name: Configure kubectl
+    - name: Create kubeconfig using secrets
       run: |
         mkdir -p ~/.kube
         
-        # Extract kubeconfig from SSH output
-        FULL_OUTPUT="${{ steps.get_kubeconfig.outputs.stdout }}"
-        echo "=== Extracting kubeconfig ==="
+        # Create kubeconfig directly using the approach we tested
+        cat > ~/.kube/config << 'EOF'
+        apiVersion: v1
+        clusters:
+        - cluster:
+            server: https://${{ secrets.CONTROL_PLANE_IP }}:6443
+            insecure-skip-tls-verify: true
+          name: kubernetes
+        contexts:
+        - context:
+            cluster: kubernetes
+            user: kubernetes-admin
+          name: kubernetes-admin@kubernetes
+        current-context: kubernetes-admin@kubernetes
+        kind: Config
+        preferences: {}
+        users:
+        - name: kubernetes-admin
+          user:
+            client-certificate-data: ${{ secrets.CLIENT_CERT }}
+            client-key-data: ${{ secrets.CLIENT_KEY }}
+        EOF
         
-        # Extract base64 content between markers
-        BASE64_CONTENT=$(echo "$FULL_OUTPUT" | sed -n '/KUBECONFIG_START/,/KUBECONFIG_END/p' | grep -v "KUBECONFIG_START\|KUBECONFIG_END" | tr -d '\n')
-        
-        if [ -z "$BASE64_CONTENT" ]; then
-          echo "❌ Failed to extract kubeconfig from SSH output"
-          echo "=== Full SSH Output ==="
-          echo "$FULL_OUTPUT"
-          exit 1
-        fi
-        
-        # Decode kubeconfig
-        echo "$BASE64_CONTENT" | base64 -d > ~/.kube/config
         chmod 600 ~/.kube/config
-        
-        # Verify kubeconfig
-        if [ ! -s ~/.kube/config ]; then
-          echo "❌ Kubeconfig file is empty"
-          exit 1
-        fi
-        
-        echo "✅ Kubeconfig configured ($(wc -c < ~/.kube/config) bytes)"
-        
-        # Show server configuration (without sensitive data)
-        echo "=== Kubeconfig server ==="
-        grep "server:" ~/.kube/config
+        echo "✅ Kubeconfig created"
 
     - name: Test cluster connection
       run: |
@@ -131,8 +67,6 @@ jobs:
       run: |
         echo "=== Installing cert-manager ==="
         kubectl apply --validate=false -f https://github.com/jetstack/cert-manager/releases/download/v1.13.0/cert-manager.yaml
-        
-        echo "=== Waiting for cert-manager to be available ==="
         kubectl wait --for=condition=available deployment/cert-manager -n cert-manager --timeout=300s
         kubectl wait --for=condition=available deployment/cert-manager-cainjector -n cert-manager --timeout=300s
         kubectl wait --for=condition=available deployment/cert-manager-webhook -n cert-manager --timeout=300s
@@ -141,8 +75,6 @@ jobs:
       run: |
         echo "=== Installing metrics-server ==="
         kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
-        
-        # Patch metrics-server for development environments
         kubectl patch deployment metrics-server -n kube-system --type='json' -p='[
           {
             "op": "add",
@@ -150,16 +82,12 @@ jobs:
             "value": "--kubelet-insecure-tls"
           }
         ]'
-        
-        echo "=== Waiting for metrics-server ==="
         kubectl wait --for=condition=available deployment/metrics-server -n kube-system --timeout=300s
 
     - name: Install Nginx Ingress Controller
       run: |
         echo "=== Installing Nginx Ingress Controller ==="
         kubectl apply -f k8s/nginx-ingress/
-        
-        echo "=== Waiting for Nginx Ingress Controller ==="
         kubectl wait --for=condition=available deployment/nginx-ingress-controller -n ingress-nginx --timeout=300s
 
     - name: Install ArgoCD
@@ -167,11 +95,7 @@ jobs:
         echo "=== Installing ArgoCD ==="
         kubectl create namespace argocd || true
         kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
-        
-        echo "=== Waiting for ArgoCD server ==="
         kubectl wait --for=condition=available deployment/argocd-server -n argocd --timeout=600s
-        
-        echo "=== Patching ArgoCD server for LoadBalancer ==="
         kubectl patch svc argocd-server -n argocd -p '{"spec": {"type": "LoadBalancer"}}'
 
     - name: Create cert-manager issuers
@@ -184,15 +108,13 @@ jobs:
         echo "=== Installing monitoring stack ==="
         kubectl apply -f k8s/monitoring/prometheus/
         kubectl apply -f k8s/monitoring/grafana/
-        
-        echo "=== Waiting for monitoring components ==="
         kubectl wait --for=condition=available deployment/prometheus -n monitoring --timeout=300s
         kubectl wait --for=condition=available deployment/grafana -n monitoring --timeout=300s
 
     - name: Configure ArgoCD applications
       run: |
         echo "=== Configuring ArgoCD applications ==="
-        sleep 60  # Wait for ArgoCD to be fully ready
+        sleep 60
         kubectl apply -f k8s/argocd/applications.yaml
 
     - name: Get access information
