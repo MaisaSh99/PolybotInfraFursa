@@ -1,9 +1,9 @@
 #!/bin/bash
-# scripts/refresh-k8s-join-token.sh
+# scripts/refresh-k8s-join-token.sh - IMPROVED VERSION
 
-set -e  # Exit on any error
+set -e
 
-echo "=== Refresh K8s Join Token Script ==="
+echo "=== Improved Refresh K8s Join Token Script ==="
 
 # Check if required environment variables are set
 if [[ -z "$AWS_REGION" ]]; then
@@ -31,16 +31,34 @@ aws configure set default.region $AWS_REGION
 echo "=== Testing AWS connectivity ==="
 aws sts get-caller-identity
 
-# Generate new kubeadm join command with sudo
-echo "=== Generating new join command ==="
-JOIN_CMD=$(echo "sudo $(kubeadm token create --print-join-command)")
-
-if [[ -z "$JOIN_CMD" ]]; then
-    echo "ERROR: Failed to generate join command"
+# Check if kubectl is working locally first
+echo "=== Testing local kubectl access ==="
+if ! kubectl get nodes --kubeconfig=/etc/kubernetes/admin.conf &> /dev/null; then
+    echo "ERROR: kubectl not working locally. Cannot generate join token."
     exit 1
 fi
 
-echo "Generated join command: ${JOIN_CMD:0:50}..."
+# Generate a fresh join token that won't expire for 24 hours
+echo "=== Generating new join token ==="
+NEW_TOKEN=$(kubeadm token create --ttl 24h0m0s)
+
+if [[ -z "$NEW_TOKEN" ]]; then
+    echo "ERROR: Failed to generate new token"
+    exit 1
+fi
+
+echo "Generated new token: $NEW_TOKEN"
+
+# Get the discovery token CA cert hash
+DISCOVERY_HASH="sha256:$(openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt | openssl rsa -pubin -outform der 2>/dev/null | openssl dgst -sha256 -hex | sed 's/^.* //')"
+
+echo "Discovery hash: $DISCOVERY_HASH"
+
+# Create the join command with PRIVATE IP (for worker nodes)
+PRIVATE_IP="10.0.0.233"
+JOIN_CMD="sudo kubeadm join $PRIVATE_IP:6443 --token $NEW_TOKEN --discovery-token-ca-cert-hash $DISCOVERY_HASH"
+
+echo "Generated join command: $JOIN_CMD"
 
 # Save it to a temporary file
 echo "$JOIN_CMD" > /tmp/k8s_join.sh
@@ -53,17 +71,6 @@ fi
 
 echo "Join command saved to /tmp/k8s_join.sh"
 
-# Install AWS CLI if missing
-if ! command -v aws &> /dev/null; then
-    echo "=== Installing AWS CLI ==="
-    curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-    unzip awscliv2.zip
-    sudo ./aws/install
-    # Re-configure after installation
-    aws configure set region $AWS_REGION
-    aws configure set default.region $AWS_REGION
-fi
-
 # Update Secrets Manager
 echo "=== Updating Secrets Manager ==="
 aws secretsmanager put-secret-value \
@@ -73,7 +80,22 @@ aws secretsmanager put-secret-value \
 
 echo "=== Secret updated successfully ==="
 
+# Verify the update
+echo "=== Verifying secret update ==="
+STORED_COMMAND=$(aws secretsmanager get-secret-value --secret-id K8S_JOIN_COMMAND --region $AWS_REGION --query SecretString --output text)
+
+if [[ "$STORED_COMMAND" == "$JOIN_CMD" ]]; then
+    echo "✅ Secret verification successful"
+else
+    echo "❌ Secret verification failed"
+    echo "Expected: $JOIN_CMD"
+    echo "Got: $STORED_COMMAND"
+    exit 1
+fi
+
 # Clean up
 rm -f /tmp/k8s_join.sh
 
-echo "=== Refresh completed successfully ==="
+echo "=== Token refresh completed successfully ==="
+echo "New token is valid for 24 hours"
+echo "Worker nodes will now automatically join using: $JOIN_CMD"

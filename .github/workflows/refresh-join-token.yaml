@@ -1,15 +1,14 @@
-name: Refresh K8s Join Token
+name: Daily K8s Token Refresh
 
 on:
   schedule:
-    - cron: '0 */12 * * *' # every 12 hours
-  workflow_dispatch:       # allow manual trigger too
+    - cron: '0 14 * * *'  # 2 PM UTC (before machines turn off at 3 PM)
+  workflow_dispatch:     # Allow manual trigger
 
 jobs:
   refresh-token:
     runs-on: ubuntu-latest
 
-    # Add AWS environment variables
     env:
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -29,7 +28,6 @@ jobs:
         echo "=== AWS Environment Check ==="
         echo "AWS_REGION: $AWS_REGION"
         echo "AWS_DEFAULT_REGION: $AWS_DEFAULT_REGION"
-        echo "AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:0:10}..."
         
         echo "=== AWS CLI Version ==="
         aws --version
@@ -37,14 +35,8 @@ jobs:
         echo "=== AWS Identity Check ==="
         aws sts get-caller-identity
         
-        echo "=== AWS Region Check ==="
-        aws configure get region
-        
         echo "=== Test Secrets Manager Access ==="
         aws secretsmanager list-secrets --region $AWS_REGION --max-items 5
-        
-        echo "=== Check if K8S_JOIN_COMMAND secret exists ==="
-        aws secretsmanager describe-secret --secret-id K8S_JOIN_COMMAND --region $AWS_REGION || echo "Secret does not exist yet"
 
     - name: Refresh join token via SSH
       uses: appleboy/ssh-action@v0.1.10
@@ -54,18 +46,13 @@ jobs:
         key: ${{ secrets.SSH_PRIVATE_KEY }}
         envs: AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY,AWS_REGION,AWS_DEFAULT_REGION
         script: |
-          echo "=== Starting join token refresh process ==="
+          echo "=== Daily join token refresh process ==="
           
           # Set AWS environment variables for the remote session
           export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
           export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
           export AWS_REGION=$AWS_REGION
           export AWS_DEFAULT_REGION=$AWS_DEFAULT_REGION
-          
-          echo "=== Remote Environment Check ==="
-          echo "AWS_REGION: $AWS_REGION"
-          echo "AWS_DEFAULT_REGION: $AWS_DEFAULT_REGION"
-          echo "Current user: $(whoami)"
           
           # Configure AWS CLI on remote host
           echo "=== Configuring AWS CLI on remote host ==="
@@ -78,29 +65,36 @@ jobs:
           
           # Check if kubectl is working
           echo "=== Kubernetes Cluster Check ==="
-          kubectl cluster-info || echo "kubectl not working or cluster not initialized"
-          kubectl get nodes || echo "Cannot get nodes"
+          kubectl get nodes || echo "kubectl not working"
           
-          # Check if kubeadm is available and list current tokens
-          echo "=== Kubeadm Check ==="
-          which kubeadm || echo "kubeadm not found"
-          kubeadm version || echo "kubeadm version failed"
-          kubeadm token list || echo "Cannot list tokens"
+          # Generate new token that lasts 24 hours
+          echo "=== Generating new 24-hour token ==="
+          NEW_TOKEN=$(kubeadm token create --ttl 24h0m0s)
+          echo "New token: $NEW_TOKEN"
           
-          # Download and execute the refresh script
-          echo "=== Downloading refresh script ==="
-          curl -O https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/refresh-k8s-join-token.sh
+          # Get discovery hash
+          DISCOVERY_HASH="sha256:$(openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt | openssl rsa -pubin -outform der 2>/dev/null | openssl dgst -sha256 -hex | sed 's/^.* //')"
           
-          echo "=== Making script executable ==="
-          chmod +x refresh-k8s-join-token.sh
+          # Create join command with private IP
+          PRIVATE_IP="10.0.0.233"
+          JOIN_CMD="sudo kubeadm join $PRIVATE_IP:6443 --token $NEW_TOKEN --discovery-token-ca-cert-hash $DISCOVERY_HASH"
           
-          echo "=== Executing refresh script ==="
-          ./refresh-k8s-join-token.sh
+          echo "Join command: $JOIN_CMD"
           
-          echo "=== Verifying secret was updated ==="
-          aws secretsmanager get-secret-value --secret-id K8S_JOIN_COMMAND --region $AWS_REGION --query SecretString --output text | head -20
+          # Save to secrets manager
+          echo "$JOIN_CMD" > /tmp/k8s_join.sh
+          aws secretsmanager put-secret-value \
+              --secret-id K8S_JOIN_COMMAND \
+              --secret-string file:///tmp/k8s_join.sh \
+              --region $AWS_REGION
+          
+          echo "✅ Token refresh completed successfully"
+          echo "New token is valid for 24 hours"
+          
+          # Cleanup
+          rm -f /tmp/k8s_join.sh
 
-    - name: Verify secret update
+    - name: Verify token update
       run: |
         echo "=== Final Verification ==="
         echo "Checking if secret was updated successfully..."
@@ -112,9 +106,12 @@ jobs:
         echo "Secret starts with: ${SECRET_VALUE:0:50}..."
         
         # Verify it looks like a valid kubeadm join command
-        if [[ $SECRET_VALUE == *"kubeadm join"* ]]; then
-          echo "✅ Secret contains valid kubeadm join command"
+        if [[ $SECRET_VALUE == *"kubeadm join 10.0.0.233:6443"* ]]; then
+          echo "✅ Secret contains valid kubeadm join command with private IP"
         else
           echo "❌ Secret does not contain valid kubeadm join command"
-          echo "Full secret (first 200 chars): ${SECRET_VALUE:0:200}"
+          echo "Full secret: $SECRET_VALUE"
+          exit 1
         fi
+        
+        echo "🎉 Daily token refresh completed successfully!"
