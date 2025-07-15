@@ -1,4 +1,6 @@
 #!/bin/bash
+# tf/modules/k8s-cluster/user_data_worker.sh - FIXED VERSION
+
 # These instructions are for Kubernetes v1.32
 KUBERNETES_VERSION=v1.32
 sudo apt-get update
@@ -35,13 +37,58 @@ sudo systemctl enable kubelet
 swapoff -a
 (crontab -l ; echo "@reboot /sbin/swapoff -a") | crontab -
 
-# Auto-join the worker node to the Kubernetes cluster
-# Fetch the join command from AWS Secrets Manager
-JOIN_COMMAND=$(aws secretsmanager get-secret-value \
-  --region us-east-2 \
-  --secret-id K8S_JOIN_COMMAND \
-  --query SecretString \
-  --output text)
+# === FIXED: Auto-join the worker node to the Kubernetes cluster ===
+echo "=== Auto-joining worker node to Kubernetes cluster ==="
 
-# Execute the join command
-eval "$JOIN_COMMAND"
+# Wait for AWS CLI to be ready
+sleep 30
+
+# Retry mechanism for joining the cluster
+MAX_RETRIES=10
+RETRY_COUNT=0
+
+while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+    echo "Attempt $((RETRY_COUNT + 1))/$MAX_RETRIES to join the cluster..."
+
+    # Fetch the join command from AWS Secrets Manager
+    JOIN_COMMAND=$(aws secretsmanager get-secret-value \
+        --region us-east-2 \
+        --secret-id K8S_JOIN_COMMAND \
+        --query SecretString \
+        --output text 2>/dev/null)
+
+    if [ -n "$JOIN_COMMAND" ] && [ "$JOIN_COMMAND" != "null" ]; then
+        echo "Retrieved join command successfully"
+        echo "Join command: ${JOIN_COMMAND:0:50}..."
+
+        # Execute the join command
+        if eval "$JOIN_COMMAND"; then
+            echo "✅ Successfully joined the Kubernetes cluster!"
+            break
+        else
+            echo "❌ Join command failed, retrying in 30 seconds..."
+        fi
+    else
+        echo "❌ Failed to retrieve join command from Secrets Manager, retrying in 30 seconds..."
+    fi
+
+    RETRY_COUNT=$((RETRY_COUNT + 1))
+    sleep 30
+done
+
+if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
+    echo "❌ Failed to join cluster after $MAX_RETRIES attempts"
+    echo "Logging error details..."
+    echo "AWS Region: us-east-2"
+    echo "Secret ID: K8S_JOIN_COMMAND"
+
+    # Try to get AWS identity for debugging
+    aws sts get-caller-identity || echo "AWS CLI not working"
+
+    # Check if we can reach the control plane
+    ping -c 3 10.0.0.233 || echo "Cannot reach control plane"
+
+    exit 1
+else
+    echo "✅ Worker node successfully joined the cluster on attempt $((RETRY_COUNT + 1))"
+fi
